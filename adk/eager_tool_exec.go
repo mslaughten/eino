@@ -177,6 +177,14 @@ func (e *eagerToolExecutorMiddleware[M]) runEager(ctx context.Context, stream *s
 		}
 
 		for _, tc := range extractToolCalls(chunk) {
+			if tc.ID != "" && tc.Function.Name != "" && isArgsComplete(tc.Function.Arguments) {
+				if !dispatched[tc.ID] {
+					dispatched[tc.ID] = true
+					dispatchTool(tc)
+				}
+				continue
+			}
+
 			idx := derefIndex(tc.Index)
 			acc := getOrCreateAccumulator(accumulators, idx)
 			acc.merge(tc)

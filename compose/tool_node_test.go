@@ -315,6 +315,97 @@ func TestToolsNode(t *testing.T) {
 	})
 }
 
+func TestInvokeSingleToolCall(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("basic invocation", func(t *testing.T) {
+		tl := &mockInvokableTool{
+			info: &schema.ToolInfo{
+				Name: "test_tool",
+				Desc: "test tool",
+				ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+					"input": {Type: "string", Desc: "input"},
+				}),
+			},
+			result: "hello-result",
+		}
+
+		tn, err := NewToolNode(ctx, &ToolsNodeConfig{
+			Tools: []tool.BaseTool{tl},
+		})
+		assert.NoError(t, err)
+
+		result, err := tn.InvokeSingleToolCall(ctx, schema.ToolCall{
+			ID:       "call-1",
+			Function: schema.FunctionCall{Name: "test_tool", Arguments: `{"input":"test"}`},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Equal(t, "hello-result", result.Output)
+		assert.False(t, result.UseEnhanced)
+	})
+
+	t.Run("unknown tool", func(t *testing.T) {
+		tl := &mockInvokableTool{
+			info: &schema.ToolInfo{
+				Name: "known_tool",
+				Desc: "known",
+				ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+					"input": {Type: "string", Desc: "input"},
+				}),
+			},
+			result: "ok",
+		}
+
+		tn, err := NewToolNode(ctx, &ToolsNodeConfig{
+			Tools: []tool.BaseTool{tl},
+		})
+		assert.NoError(t, err)
+
+		result, err := tn.InvokeSingleToolCall(ctx, schema.ToolCall{
+			ID:       "call-1",
+			Function: schema.FunctionCall{Name: "nonexistent", Arguments: `{}`},
+		})
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("empty tool call returns error", func(t *testing.T) {
+		tl := &mockInvokableTool{
+			info: &schema.ToolInfo{
+				Name: "test_tool",
+				Desc: "test tool",
+				ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+					"input": {Type: "string", Desc: "input"},
+				}),
+			},
+			result: "ok",
+		}
+
+		tn, err := NewToolNode(ctx, &ToolsNodeConfig{
+			Tools: []tool.BaseTool{tl},
+		})
+		assert.NoError(t, err)
+
+		result, err := tn.InvokeSingleToolCall(ctx, schema.ToolCall{})
+		assert.Error(t, err)
+		assert.Nil(t, result)
+	})
+}
+
+type mockInvokableTool struct {
+	info   *schema.ToolInfo
+	result string
+}
+
+func (t *mockInvokableTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return t.info, nil
+}
+
+func (t *mockInvokableTool) InvokableRun(_ context.Context, _ string, _ ...tool.Option) (string, error) {
+	return t.result, nil
+}
+
 type userCompanyRequest struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`

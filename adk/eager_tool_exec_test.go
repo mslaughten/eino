@@ -18,6 +18,7 @@ package adk
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -417,6 +418,301 @@ func TestEagerToolExecution_ChunkedArgs(t *testing.T) {
 	}
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tool1.callCount))
+}
+
+func TestRunEager_DirectDispatch(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "direct-result"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"hello"}`}},
+		}),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
+
+	executed, enhanced, failed, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Equal(t, map[string]string{"call-1": "direct-result"}, executed)
+	assert.Empty(t, enhanced)
+	assert.Empty(t, failed)
+}
+
+func TestRunEager_StreamError(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "should-not-appear"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	r, w := schema.Pipe[*schema.Message](1)
+	go func() {
+		_ = w.Send(schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"a"}`}},
+		}), nil)
+		_ = w.Send(nil, fmt.Errorf("stream error"))
+		w.Close()
+	}()
+
+	exec.runEager(ctx, r, coord)
+
+	assert.True(t, coord.isAborted())
+	executed, enhanced, failed, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Nil(t, executed)
+	assert.Nil(t, enhanced)
+	assert.Nil(t, failed)
+}
+
+func TestRunEager_ChunkedAccumulation(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "acc-result"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	idx0 := 0
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"inp`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, Function: schema.FunctionCall{Arguments: `ut":"test"}`}},
+			},
+		},
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
+	executed, _, _, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Equal(t, map[string]string{"call-1": "acc-result"}, executed)
+}
+
+func TestRunEager_SequentialDispatch(t *testing.T) {
+	ctx := context.Background()
+
+	tl1 := &eagerTestTool{name: "tool1", result: "r1", delay: 10 * time.Millisecond}
+	tl2 := &eagerTestTool{name: "tool2", result: "r2", delay: 10 * time.Millisecond}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl1, tl2},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:           tn,
+		toolNodeKey:         "ToolNode",
+		coordPtr:            coordPtr,
+		executeSequentially: true,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"a"}`}},
+			{ID: "call-2", Function: schema.FunctionCall{Name: "tool2", Arguments: `{"input":"b"}`}},
+		}),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl1.callCount))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl2.callCount))
+	executed, _, _, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Equal(t, "r1", executed["call-1"])
+	assert.Equal(t, "r2", executed["call-2"])
+}
+
+func TestRunEager_ConcurrentDispatch(t *testing.T) {
+	ctx := context.Background()
+
+	tl1 := &eagerTestTool{name: "tool1", result: "r1", delay: 50 * time.Millisecond}
+	tl2 := &eagerTestTool{name: "tool2", result: "r2", delay: 50 * time.Millisecond}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl1, tl2},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"a"}`}},
+			{ID: "call-2", Function: schema.FunctionCall{Name: "tool2", Arguments: `{"input":"b"}`}},
+		}),
+	})
+
+	start := time.Now()
+	exec.runEager(ctx, stream, coord)
+	elapsed := time.Since(start)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl1.callCount))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl2.callCount))
+	assert.Less(t, elapsed, 150*time.Millisecond)
+	executed, _, _, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Equal(t, "r1", executed["call-1"])
+	assert.Equal(t, "r2", executed["call-2"])
+}
+
+func TestRunEager_NoToolCalls(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "unused"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("hello world", nil),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&tl.callCount))
+	executed, enhanced, failed, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Empty(t, executed)
+	assert.Empty(t, enhanced)
+	assert.Empty(t, failed)
+}
+
+func TestRunEager_UnknownTool(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "ok"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "unknown_tool", Arguments: `{}`}},
+		}),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	executed, _, failed, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Empty(t, executed)
+	assert.Equal(t, []string{"call-1"}, failed)
+}
+
+func TestEagerCoordHolder_StoreAndLoad(t *testing.T) {
+	h := &eagerCoordHolder{}
+	assert.Nil(t, h.Load())
+
+	c := newEagerCoord()
+	h.Store(c)
+	assert.Equal(t, c, h.Load())
+
+	c2 := newEagerCoord()
+	h.Store(c2)
+	assert.Equal(t, c2, h.Load())
+}
+
+func TestGetOrCreateAccumulator(t *testing.T) {
+	accumulators := map[int]*toolCallAccumulator{}
+
+	acc1 := getOrCreateAccumulator(accumulators, 0)
+	assert.NotNil(t, acc1)
+
+	acc1Again := getOrCreateAccumulator(accumulators, 0)
+	assert.True(t, acc1 == acc1Again)
+
+	acc2 := getOrCreateAccumulator(accumulators, 1)
+	assert.NotNil(t, acc2)
+	assert.True(t, acc1 != acc2)
+}
+
+func TestIsAborted(t *testing.T) {
+	coord := newEagerCoord()
+	assert.False(t, coord.isAborted())
+	coord.abort()
+	assert.True(t, coord.isAborted())
 }
 
 func TestEagerToolExecution_ConcurrentTools(t *testing.T) {
