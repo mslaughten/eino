@@ -350,6 +350,36 @@ func wireEagerToolExec[M MessageType](
 	}
 }
 
+func buildToolHandlers(config *reactConfig) (
+	func(context.Context, Message, *State) (Message, error),
+	func(context.Context, *schema.StreamReader[[]*schema.Message], *State) (*schema.StreamReader[[]*schema.Message], error),
+) {
+	preHandle := func(ctx context.Context, _ Message, st *State) (Message, error) {
+		input := st.Messages[len(st.Messages)-1]
+		returnDirectly := config.toolsReturnDirectly
+		if execCtx := getChatModelAgentExecCtx(ctx); execCtx != nil && len(execCtx.runtimeReturnDirectly) > 0 {
+			returnDirectly = execCtx.runtimeReturnDirectly
+		}
+		if len(returnDirectly) > 0 {
+			for i := range input.ToolCalls {
+				toolName := input.ToolCalls[i].Function.Name
+				if _, ok := returnDirectly[toolName]; ok {
+					st.setReturnDirectlyToolCallID(input.ToolCalls[i].ID)
+				}
+			}
+		}
+		return input, nil
+	}
+	postHandle := func(ctx context.Context, out *schema.StreamReader[[]*schema.Message], st *State) (*schema.StreamReader[[]*schema.Message], error) {
+		if event := st.getReturnDirectlyEvent(); event != nil {
+			getChatModelAgentExecCtx(ctx).send(event)
+			st.setReturnDirectlyEvent(nil)
+		}
+		return out, nil
+	}
+	return preHandle, postHandle
+}
+
 func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 	const (
 		initNode_                      = "Init"
@@ -415,29 +445,7 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 		return msg, nil
 	}), compose.WithNodeName(cancelCheckNode_))
 
-	toolPreHandle := func(ctx context.Context, _ Message, st *State) (Message, error) {
-		input := st.Messages[len(st.Messages)-1]
-		returnDirectly := config.toolsReturnDirectly
-		if execCtx := getChatModelAgentExecCtx(ctx); execCtx != nil && len(execCtx.runtimeReturnDirectly) > 0 {
-			returnDirectly = execCtx.runtimeReturnDirectly
-		}
-		if len(returnDirectly) > 0 {
-			for i := range input.ToolCalls {
-				toolName := input.ToolCalls[i].Function.Name
-				if _, ok := returnDirectly[toolName]; ok {
-					st.setReturnDirectlyToolCallID(input.ToolCalls[i].ID)
-				}
-			}
-		}
-		return input, nil
-	}
-	toolPostHandle := func(ctx context.Context, out *schema.StreamReader[[]*schema.Message], st *State) (*schema.StreamReader[[]*schema.Message], error) {
-		if event := st.getReturnDirectlyEvent(); event != nil {
-			getChatModelAgentExecCtx(ctx).send(event)
-			st.setReturnDirectlyEvent(nil)
-		}
-		return out, nil
-	}
+	toolPreHandle, toolPostHandle := buildToolHandlers(config)
 	_ = g.AddToolsNode(toolNode_, toolsNode,
 		compose.WithStatePreHandler(toolPreHandle),
 		compose.WithStreamStatePostHandler(toolPostHandle),
