@@ -315,7 +315,7 @@ func TestToolsNode(t *testing.T) {
 	})
 }
 
-func TestInvokeSingleToolCall(t *testing.T) {
+func TestInternalStreamSingleToolCall(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("basic invocation", func(t *testing.T) {
@@ -335,14 +335,16 @@ func TestInvokeSingleToolCall(t *testing.T) {
 		})
 		assert.NoError(t, err)
 
-		result, err := tn.InvokeSingleToolCall(ctx, schema.ToolCall{
+		sr, _, useEnhanced, err := InternalStreamSingleToolCall(tn, ctx, schema.ToolCall{
 			ID:       "call-1",
 			Function: schema.FunctionCall{Name: "test_tool", Arguments: `{"input":"test"}`},
 		})
 		assert.NoError(t, err)
-		assert.NotNil(t, result)
-		assert.Equal(t, "hello-result", result.Output)
-		assert.False(t, result.UseEnhanced)
+		assert.False(t, useEnhanced)
+		assert.NotNil(t, sr)
+		chunk, recvErr := sr.Recv()
+		assert.NoError(t, recvErr)
+		assert.Equal(t, "hello-result", chunk)
 	})
 
 	t.Run("unknown tool", func(t *testing.T) {
@@ -362,12 +364,11 @@ func TestInvokeSingleToolCall(t *testing.T) {
 		})
 		assert.NoError(t, err)
 
-		result, err := tn.InvokeSingleToolCall(ctx, schema.ToolCall{
+		_, _, _, err = InternalStreamSingleToolCall(tn, ctx, schema.ToolCall{
 			ID:       "call-1",
 			Function: schema.FunctionCall{Name: "nonexistent", Arguments: `{}`},
 		})
 		assert.Error(t, err)
-		assert.Nil(t, result)
 	})
 
 	t.Run("empty tool call returns error", func(t *testing.T) {
@@ -387,9 +388,8 @@ func TestInvokeSingleToolCall(t *testing.T) {
 		})
 		assert.NoError(t, err)
 
-		result, err := tn.InvokeSingleToolCall(ctx, schema.ToolCall{})
+		_, _, _, err = InternalStreamSingleToolCall(tn, ctx, schema.ToolCall{})
 		assert.Error(t, err)
-		assert.Nil(t, result)
 	})
 }
 

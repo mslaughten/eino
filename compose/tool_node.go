@@ -69,7 +69,7 @@ type ToolsNode struct {
 	streamToolCallMiddlewares         []StreamableToolMiddleware
 	enhancedToolCallMiddlewares       []EnhancedInvokableToolMiddleware
 	enhancedStreamToolCallMiddlewares []EnhancedStreamableToolMiddleware
-	toolExecutionProvider             func(ctx context.Context, input *schema.Message) (map[string]string, map[string]*schema.ToolResult, error)
+	toolExecutionProvider             func(ctx context.Context, input *schema.Message) (map[string]*schema.StreamReader[string], map[string]*schema.StreamReader[*schema.ToolResult], error)
 }
 
 // ToolInput represents the input parameters for a tool call execution.
@@ -190,14 +190,6 @@ type ToolsNodeConfig struct {
 	// Invokable middleware only applies to tools implementing InvokableTool interface.
 	// Streamable middleware only applies to tools implementing StreamableTool interface.
 	ToolCallMiddlewares []ToolMiddleware
-
-	// ToolExecutionProvider, when set, delegates all tool execution to the provider.
-	// The ToolsNode will call this function instead of executing tools itself.
-	// Any tool call IDs present in the returned maps are treated as already executed.
-	// If a tool failed during eager execution, the provider returns an error,
-	// causing the ToolsNode to fail as it would for a normal tool failure.
-	// This is used internally by the eager tool execution middleware.
-	ToolExecutionProvider func(ctx context.Context, input *schema.Message) (executedTools map[string]string, executedEnhancedTools map[string]*schema.ToolResult, err error)
 }
 
 // NewToolNode creates a new ToolsNode.
@@ -242,7 +234,6 @@ func NewToolNode(ctx context.Context, conf *ToolsNodeConfig) (*ToolsNode, error)
 		streamToolCallMiddlewares:         streamMiddlewares,
 		enhancedToolCallMiddlewares:       enhancedInvokableMiddlewares,
 		enhancedStreamToolCallMiddlewares: enhancedStreamableMiddlewares,
-		toolExecutionProvider:             conf.ToolExecutionProvider,
 	}, nil
 }
 
@@ -564,7 +555,10 @@ type toolCallTask struct {
 }
 
 func (tn *ToolsNode) genToolCallTasks(ctx context.Context, tuple *toolsTuple,
-	input *schema.Message, executedTools map[string]string, executedEnhancedTools map[string]*schema.ToolResult, isStream bool) ([]toolCallTask, error) {
+	input *schema.Message,
+	executedStreamTools map[string]*schema.StreamReader[string],
+	executedEnhancedStreamTools map[string]*schema.StreamReader[*schema.ToolResult],
+	isStream bool) ([]toolCallTask, error) {
 
 	if input.Role != schema.Assistant {
 		return nil, fmt.Errorf("expected message role is Assistant, got %s", input.Role)
@@ -579,29 +573,37 @@ func (tn *ToolsNode) genToolCallTasks(ctx context.Context, tuple *toolsTuple,
 
 	for i := 0; i < n; i++ {
 		toolCall := input.ToolCalls[i]
-		if enhancedResult, executed := executedEnhancedTools[toolCall.ID]; executed {
+		if enhancedStream, executed := executedEnhancedStreamTools[toolCall.ID]; executed {
 			toolCallTasks[i].name = toolCall.Function.Name
 			toolCallTasks[i].arg = toolCall.Function.Arguments
 			toolCallTasks[i].callID = toolCall.ID
 			toolCallTasks[i].executed = true
 			toolCallTasks[i].useEnhanced = true
 			if isStream {
-				toolCallTasks[i].enhancedSOutput = schema.StreamReaderFromArray([]*schema.ToolResult{enhancedResult})
+				toolCallTasks[i].enhancedSOutput = enhancedStream
 			} else {
-				toolCallTasks[i].enhancedOutput = enhancedResult
+				collected, collectErr := concatStreamReader(enhancedStream)
+				if collectErr != nil {
+					return nil, fmt.Errorf("failed to collect eager enhanced tool result for %s: %w", toolCall.ID, collectErr)
+				}
+				toolCallTasks[i].enhancedOutput = collected
 			}
 			continue
 		}
-		if result, executed := executedTools[toolCall.ID]; executed {
+		if stream, executed := executedStreamTools[toolCall.ID]; executed {
 			toolCallTasks[i].name = toolCall.Function.Name
 			toolCallTasks[i].arg = toolCall.Function.Arguments
 			toolCallTasks[i].callID = toolCall.ID
 			toolCallTasks[i].executed = true
 			toolCallTasks[i].useEnhanced = false
 			if isStream {
-				toolCallTasks[i].sOutput = schema.StreamReaderFromArray([]string{result})
+				toolCallTasks[i].sOutput = stream
 			} else {
-				toolCallTasks[i].output = result
+				collected, collectErr := concatStreamReader(stream)
+				if collectErr != nil {
+					return nil, fmt.Errorf("failed to collect eager tool result for %s: %w", toolCall.ID, collectErr)
+				}
+				toolCallTasks[i].output = collected
 			}
 			continue
 		}
@@ -807,26 +809,32 @@ func (tn *ToolsNode) Invoke(ctx context.Context, input *schema.Message,
 		}
 	}
 
-	var executedTools map[string]string
-	var executedEnhancedTools map[string]*schema.ToolResult
+	var executedStreamTools map[string]*schema.StreamReader[string]
+	var executedEnhancedStreamTools map[string]*schema.StreamReader[*schema.ToolResult]
 	if wasInterrupted, hasState, tnState := GetInterruptState[*toolsInterruptAndRerunState](ctx); wasInterrupted && hasState {
 		input = tnState.Input
 		if tnState.ExecutedTools != nil {
-			executedTools = tnState.ExecutedTools
+			executedStreamTools = make(map[string]*schema.StreamReader[string], len(tnState.ExecutedTools))
+			for k, v := range tnState.ExecutedTools {
+				executedStreamTools[k] = schema.StreamReaderFromArray([]string{v})
+			}
 		}
 		if tnState.ExecutedEnhancedTools != nil {
-			executedEnhancedTools = tnState.ExecutedEnhancedTools
+			executedEnhancedStreamTools = make(map[string]*schema.StreamReader[*schema.ToolResult], len(tnState.ExecutedEnhancedTools))
+			for k, v := range tnState.ExecutedEnhancedTools {
+				executedEnhancedStreamTools[k] = schema.StreamReaderFromArray([]*schema.ToolResult{v})
+			}
 		}
 	} else if tn.toolExecutionProvider != nil {
 		eagerExecuted, eagerEnhanced, providerErr := tn.toolExecutionProvider(ctx, input)
 		if providerErr != nil {
 			return nil, providerErr
 		}
-		executedTools = eagerExecuted
-		executedEnhancedTools = eagerEnhanced
+		executedStreamTools = eagerExecuted
+		executedEnhancedStreamTools = eagerEnhanced
 	}
 
-	tasks, err := tn.genToolCallTasks(ctx, tuple, input, executedTools, executedEnhancedTools, false)
+	tasks, err := tn.genToolCallTasks(ctx, tuple, input, executedStreamTools, executedEnhancedStreamTools, false)
 	if err != nil {
 		return nil, err
 	}
@@ -916,26 +924,32 @@ func (tn *ToolsNode) Stream(ctx context.Context, input *schema.Message,
 		}
 	}
 
-	var executedTools map[string]string
-	var executedEnhancedTools map[string]*schema.ToolResult
+	var executedStreamTools map[string]*schema.StreamReader[string]
+	var executedEnhancedStreamTools map[string]*schema.StreamReader[*schema.ToolResult]
 	if wasInterrupted, hasState, tnState := GetInterruptState[*toolsInterruptAndRerunState](ctx); wasInterrupted && hasState {
 		input = tnState.Input
 		if tnState.ExecutedTools != nil {
-			executedTools = tnState.ExecutedTools
+			executedStreamTools = make(map[string]*schema.StreamReader[string], len(tnState.ExecutedTools))
+			for k, v := range tnState.ExecutedTools {
+				executedStreamTools[k] = schema.StreamReaderFromArray([]string{v})
+			}
 		}
 		if tnState.ExecutedEnhancedTools != nil {
-			executedEnhancedTools = tnState.ExecutedEnhancedTools
+			executedEnhancedStreamTools = make(map[string]*schema.StreamReader[*schema.ToolResult], len(tnState.ExecutedEnhancedTools))
+			for k, v := range tnState.ExecutedEnhancedTools {
+				executedEnhancedStreamTools[k] = schema.StreamReaderFromArray([]*schema.ToolResult{v})
+			}
 		}
 	} else if tn.toolExecutionProvider != nil {
 		eagerExecuted, eagerEnhanced, providerErr := tn.toolExecutionProvider(ctx, input)
 		if providerErr != nil {
 			return nil, providerErr
 		}
-		executedTools = eagerExecuted
-		executedEnhancedTools = eagerEnhanced
+		executedStreamTools = eagerExecuted
+		executedEnhancedStreamTools = eagerEnhanced
 	}
 
-	tasks, err := tn.genToolCallTasks(ctx, tuple, input, executedTools, executedEnhancedTools, true)
+	tasks, err := tn.genToolCallTasks(ctx, tuple, input, executedStreamTools, executedEnhancedStreamTools, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1040,47 +1054,52 @@ func (tn *ToolsNode) GetType() string {
 	return ""
 }
 
-// SingleToolCallResult holds the result of executing a single tool call
-// via InvokeSingleToolCall. It carries both the plain string output and the
-// enhanced ToolResult, with UseEnhanced indicating which form to use.
-type SingleToolCallResult struct {
-	Output         string
-	EnhancedOutput *schema.ToolResult
-	UseEnhanced    bool
+// InternalSetToolExecutionProvider sets the tool execution provider on a ToolsNode.
+// This is an internal API used by the eager tool execution middleware in the adk package.
+// It should not be called by end users.
+func InternalSetToolExecutionProvider(tn *ToolsNode, provider func(ctx context.Context, input *schema.Message) (map[string]*schema.StreamReader[string], map[string]*schema.StreamReader[*schema.ToolResult], error)) {
+	tn.toolExecutionProvider = provider
 }
 
-// InvokeSingleToolCall executes a single tool call through the ToolsNode's full
-// pipeline, including ToolArgumentsHandler, UnknownToolHandler, ToolCallMiddlewares,
-// callbacks, and address segment appending. It returns the result or an error.
-// This is used by the eager tool executor to invoke individual tools while
-// honoring all ToolsNodeConfig settings.
-func (tn *ToolsNode) InvokeSingleToolCall(ctx context.Context, tc schema.ToolCall, opts ...tool.Option) (*SingleToolCallResult, error) {
+// InternalSetAgenticToolExecutionProvider sets the tool execution provider on an AgenticToolsNode.
+// This is an internal API used by the eager tool execution middleware in the adk package.
+// It should not be called by end users.
+func InternalSetAgenticToolExecutionProvider(atn *AgenticToolsNode, provider func(ctx context.Context, input *schema.Message) (map[string]*schema.StreamReader[string], map[string]*schema.StreamReader[*schema.ToolResult], error)) {
+	atn.inner.toolExecutionProvider = provider
+}
+
+// InternalStreamSingleToolCall executes a single tool call through the ToolsNode's full
+// pipeline in stream mode, returning a StreamReader for the result.
+// This preserves the streaming behavior of StreamableTool / EnhancedStreamableTool.
+// This is an internal API used by the eager tool execution middleware in the adk package.
+// It should not be called by end users.
+func InternalStreamSingleToolCall(tn *ToolsNode, ctx context.Context, tc schema.ToolCall, opts ...tool.Option) (
+	sOutput *schema.StreamReader[string],
+	enhancedSOutput *schema.StreamReader[*schema.ToolResult],
+	useEnhanced bool, err error,
+) {
 	syntheticMsg := &schema.Message{
 		Role:      schema.Assistant,
 		ToolCalls: []schema.ToolCall{tc},
 	}
 
-	tasks, err := tn.genToolCallTasks(ctx, tn.tuple, syntheticMsg, nil, nil, false)
+	tasks, err := tn.genToolCallTasks(ctx, tn.tuple, syntheticMsg, nil, nil, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 
 	if len(tasks) == 0 {
-		return &SingleToolCallResult{}, nil
+		return nil, nil, false, nil
 	}
 
 	task := &tasks[0]
-	runToolCallTaskByInvoke(ctx, task, opts...)
+	runToolCallTaskByStream(ctx, task, opts...)
 
 	if task.err != nil {
-		return nil, task.err
+		return nil, nil, false, task.err
 	}
 
-	return &SingleToolCallResult{
-		Output:         task.output,
-		EnhancedOutput: task.enhancedOutput,
-		UseEnhanced:    task.useEnhanced,
-	}, nil
+	return task.sOutput, task.enhancedSOutput, task.useEnhanced, nil
 }
 
 func getToolsNodeOptions(opts ...ToolsNodeOption) *toolsNodeOptions {

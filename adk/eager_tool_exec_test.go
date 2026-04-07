@@ -19,6 +19,7 @@ package adk
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,6 +33,41 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
+
+func readAllStream[T any](sr *schema.StreamReader[T]) ([]T, error) {
+	if sr == nil {
+		return nil, nil
+	}
+	var result []T
+	for {
+		v, err := sr.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return result, nil
+			}
+			return nil, err
+		}
+		result = append(result, v)
+	}
+}
+
+func collectStringStreams(t *testing.T, m map[string]*schema.StreamReader[string]) map[string]string {
+	t.Helper()
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]string, len(m))
+	for k, sr := range m {
+		parts, err := readAllStream(sr)
+		require.NoError(t, err)
+		var s string
+		for _, p := range parts {
+			s += p
+		}
+		result[k] = s
+	}
+	return result
+}
 
 func TestIsArgsComplete(t *testing.T) {
 	tests := []struct {
@@ -113,26 +149,28 @@ func TestDerefIndex(t *testing.T) {
 func TestEagerCoordLifecycle(t *testing.T) {
 	t.Run("store and collect success", func(t *testing.T) {
 		coord := newEagerCoord()
-		coord.storeResult("call-1", &eagerToolResult{output: "result-1"})
+		coord.storeResult("call-1", &eagerToolResult{sOutput: schema.StreamReaderFromArray([]string{"result-1"})})
 		coord.storeResult("call-2", &eagerToolResult{
-			enhancedOutput: &schema.ToolResult{
-				Parts: []schema.ToolOutputPart{
-					{Type: schema.ToolPartTypeText, Text: "enhanced"},
+			enhancedSOutput: schema.StreamReaderFromArray([]*schema.ToolResult{
+				{
+					Parts: []schema.ToolOutputPart{
+						{Type: schema.ToolPartTypeText, Text: "enhanced"},
+					},
 				},
-			},
+			}),
 			useEnhanced: true,
 		})
 		coord.markDone()
 
 		executed, enhanced, err := coord.collectResults()
 		assert.NoError(t, err)
-		assert.Equal(t, map[string]string{"call-1": "result-1"}, executed)
+		assert.Equal(t, map[string]string{"call-1": "result-1"}, collectStringStreams(t, executed))
 		assert.Contains(t, enhanced, "call-2")
 	})
 
 	t.Run("failed tool returns error", func(t *testing.T) {
 		coord := newEagerCoord()
-		coord.storeResult("call-1", &eagerToolResult{output: "result-1"})
+		coord.storeResult("call-1", &eagerToolResult{sOutput: schema.StreamReaderFromArray([]string{"result-1"})})
 		coord.storeResult("call-3", &eagerToolResult{err: context.Canceled})
 		coord.markDone()
 
@@ -143,7 +181,7 @@ func TestEagerCoordLifecycle(t *testing.T) {
 
 	t.Run("aborted returns nil", func(t *testing.T) {
 		coord := newEagerCoord()
-		coord.storeResult("call-1", &eagerToolResult{output: "result-1"})
+		coord.storeResult("call-1", &eagerToolResult{sOutput: schema.StreamReaderFromArray([]string{"result-1"})})
 		coord.abort()
 		coord.markDone()
 
@@ -459,7 +497,7 @@ func TestRunEager_DirectDispatch(t *testing.T) {
 
 	executed, enhanced, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
-	assert.Equal(t, map[string]string{"call-1": "direct-result"}, executed)
+	assert.Equal(t, map[string]string{"call-1": "direct-result"}, collectStringStreams(t, executed))
 	assert.Empty(t, enhanced)
 }
 
@@ -540,7 +578,7 @@ func TestRunEager_ChunkedAccumulation(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
 	executed, _, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
-	assert.Equal(t, map[string]string{"call-1": "acc-result"}, executed)
+	assert.Equal(t, map[string]string{"call-1": "acc-result"}, collectStringStreams(t, executed))
 }
 
 func TestRunEager_SequentialDispatch(t *testing.T) {
@@ -577,8 +615,9 @@ func TestRunEager_SequentialDispatch(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl2.callCount))
 	executed, _, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
-	assert.Equal(t, "r1", executed["call-1"])
-	assert.Equal(t, "r2", executed["call-2"])
+	collected := collectStringStreams(t, executed)
+	assert.Equal(t, "r1", collected["call-1"])
+	assert.Equal(t, "r2", collected["call-2"])
 }
 
 func TestRunEager_ConcurrentDispatch(t *testing.T) {
@@ -617,8 +656,9 @@ func TestRunEager_ConcurrentDispatch(t *testing.T) {
 	assert.Less(t, elapsed, 150*time.Millisecond)
 	executed, _, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
-	assert.Equal(t, "r1", executed["call-1"])
-	assert.Equal(t, "r2", executed["call-2"])
+	collected := collectStringStreams(t, executed)
+	assert.Equal(t, "r1", collected["call-1"])
+	assert.Equal(t, "r2", collected["call-2"])
 }
 
 func TestRunEager_NoToolCalls(t *testing.T) {

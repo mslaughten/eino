@@ -310,13 +310,17 @@ func genReactState(config *reactConfig) func(ctx context.Context) *State {
 	}
 }
 
-func setupEagerToolExecutionProvider(config *compose.ToolsNodeConfig, eagerExecution bool) *eagerCoordHolder {
+type toolExecutionProviderFunc = func(ctx context.Context, input *schema.Message) (
+	map[string]*schema.StreamReader[string], map[string]*schema.StreamReader[*schema.ToolResult], error,
+)
+
+func newEagerCoordHolderWithProvider(eagerExecution bool) (*eagerCoordHolder, toolExecutionProviderFunc) {
 	if !eagerExecution {
-		return nil
+		return nil, nil
 	}
 	holder := &eagerCoordHolder{}
-	config.ToolExecutionProvider = func(ctx context.Context, input *schema.Message) (
-		map[string]string, map[string]*schema.ToolResult, error,
+	provider := func(ctx context.Context, input *schema.Message) (
+		map[string]*schema.StreamReader[string], map[string]*schema.StreamReader[*schema.ToolResult], error,
 	) {
 		coord := holder.Load()
 		if coord == nil {
@@ -325,7 +329,7 @@ func setupEagerToolExecutionProvider(config *compose.ToolsNodeConfig, eagerExecu
 		coord.waitDone(ctx)
 		return coord.collectResults()
 	}
-	return holder
+	return holder, provider
 }
 
 func wireEagerToolExec[M MessageType](
@@ -370,11 +374,14 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 
 	toolsConfig := config.toolsConfig
 
-	eagerCoordPtr := setupEagerToolExecutionProvider(toolsConfig, config.eagerExecution)
-
 	toolsNode, err := compose.NewToolNode(ctx, toolsConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	eagerCoordPtr, eagerProvider := newEagerCoordHolderWithProvider(config.eagerExecution)
+	if eagerProvider != nil {
+		compose.InternalSetToolExecutionProvider(toolsNode, eagerProvider)
 	}
 
 	wireEagerToolExec(eagerCoordPtr, toolsNode, toolNode_, config.toolsConfig.ExecuteSequentially, config.modelWrapperConf)
@@ -619,11 +626,14 @@ func newAgenticReact(ctx context.Context, config *agenticReactConfig) (agenticRe
 
 	var wrappedModel model.AgenticModel = config.model
 
-	eagerCoordPtr := setupEagerToolExecutionProvider(config.toolsConfig, config.eagerExecution)
-
 	toolsNode, err := compose.NewAgenticToolsNode(ctx, config.toolsConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	eagerCoordPtr, eagerProvider := newEagerCoordHolderWithProvider(config.eagerExecution)
+	if eagerProvider != nil {
+		compose.InternalSetAgenticToolExecutionProvider(toolsNode, eagerProvider)
 	}
 
 	if config.eagerExecution {

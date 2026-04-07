@@ -29,10 +29,10 @@ import (
 )
 
 type eagerToolResult struct {
-	output         string
-	enhancedOutput *schema.ToolResult
-	useEnhanced    bool
-	err            error
+	sOutput         *schema.StreamReader[string]
+	enhancedSOutput *schema.StreamReader[*schema.ToolResult]
+	useEnhanced     bool
+	err             error
 }
 
 type eagerCoord struct {
@@ -81,9 +81,15 @@ func (c *eagerCoord) waitDone(ctx context.Context) {
 	}
 }
 
+// collectResults returns the results of all eagerly executed tools as
+// StreamReader maps. If any tool failed, returns the first error encountered.
+// Design: when multiple tools fail, the reported error is non-deterministic
+// (Go map iteration order). This is acceptable because the error triggers
+// ToolsNode-level failure regardless of which specific tool is reported, and
+// the caller (ToolsNode) does not branch on error message content.
 func (c *eagerCoord) collectResults() (
-	executedTools map[string]string,
-	executedEnhancedTools map[string]*schema.ToolResult,
+	executedStreamTools map[string]*schema.StreamReader[string],
+	executedEnhancedStreamTools map[string]*schema.StreamReader[*schema.ToolResult],
 	err error,
 ) {
 	c.mu.Lock()
@@ -98,19 +104,19 @@ func (c *eagerCoord) collectResults() (
 			return nil, nil, fmt.Errorf("eager tool call %s failed: %w", callID, result.err)
 		}
 		if result.useEnhanced {
-			if executedEnhancedTools == nil {
-				executedEnhancedTools = make(map[string]*schema.ToolResult)
+			if executedEnhancedStreamTools == nil {
+				executedEnhancedStreamTools = make(map[string]*schema.StreamReader[*schema.ToolResult])
 			}
-			executedEnhancedTools[callID] = result.enhancedOutput
+			executedEnhancedStreamTools[callID] = result.enhancedSOutput
 		} else {
-			if executedTools == nil {
-				executedTools = make(map[string]string)
+			if executedStreamTools == nil {
+				executedStreamTools = make(map[string]*schema.StreamReader[string])
 			}
-			executedTools[callID] = result.output
+			executedStreamTools[callID] = result.sOutput
 		}
 	}
 
-	return executedTools, executedEnhancedTools, nil
+	return executedStreamTools, executedEnhancedStreamTools, nil
 }
 
 type eagerCoordHolder struct {
@@ -144,8 +150,23 @@ func (e *eagerToolExecutorMiddleware[M]) runEager(ctx context.Context, stream *s
 
 	accumulators := map[int]*toolCallAccumulator{}
 	dispatched := map[string]bool{}
+	// lastNilIdx tracks the current accumulator index for tool call chunks with
+	// nil Index. Unlike concatToolCalls (which treats nil-Index chunks as
+	// standalone), eager execution receives chunks incrementally and must route
+	// continuation chunks (no ID, nil Index) to the correct accumulator. When a
+	// new tool call ID appears on a nil-Index chunk, we allocate a new
+	// accumulator and update lastNilIdx so subsequent continuation chunks
+	// route there.
+	lastNilIdx := 0
 	var wg sync.WaitGroup
 
+	// Design: dispatched tool goroutines use the parent ctx, not a dedicated
+	// cancellable context. On abort (stream error), already-running tools
+	// continue to completion but their results are discarded (collectResults
+	// returns nil when aborted). This is acceptable because:
+	// 1. Tools that are context-aware will exit promptly via ctx.Done()
+	// 2. Adding a cancel per goroutine increases complexity for minimal benefit
+	//    since abort → retry replaces the coord entirely
 	dispatchTool := func(tc schema.ToolCall) {
 		if coord.isAborted() {
 			coord.storeResult(tc.ID, &eagerToolResult{err: context.Canceled})
@@ -185,8 +206,20 @@ func (e *eagerToolExecutorMiddleware[M]) runEager(ctx context.Context, stream *s
 			}
 
 			idx := derefIndex(tc.Index)
+			if tc.Index == nil {
+				if tc.ID != "" {
+					if existing, ok := accumulators[lastNilIdx]; ok && existing.id != "" && existing.id != tc.ID {
+						lastNilIdx = len(accumulators)
+					}
+				}
+				idx = lastNilIdx
+			}
 			acc := getOrCreateAccumulator(accumulators, idx)
-			acc.merge(tc)
+			if mergeErr := acc.merge(tc); mergeErr != nil {
+				coord.abort()
+				wg.Wait()
+				return
+			}
 
 			if !dispatched[acc.id] && acc.id != "" && isArgsComplete(acc.args.String()) {
 				dispatched[acc.id] = true
@@ -196,7 +229,7 @@ func (e *eagerToolExecutorMiddleware[M]) runEager(ctx context.Context, stream *s
 	}
 
 	for _, acc := range accumulators {
-		if !dispatched[acc.id] && acc.id != "" && acc.name != "" {
+		if !dispatched[acc.id] && acc.id != "" && acc.name != "" && isArgsComplete(acc.args.String()) {
 			dispatched[acc.id] = true
 			dispatchTool(acc.toToolCall())
 		}
@@ -212,15 +245,15 @@ func (e *eagerToolExecutorMiddleware[M]) executeSingleTool(ctx context.Context, 
 
 	toolNodeCtx := compose.AppendAddressSegment(ctx, compose.AddressSegmentNode, e.toolNodeKey)
 
-	result, err := e.toolsNode.InvokeSingleToolCall(toolNodeCtx, tc)
+	sOutput, enhancedSOutput, useEnhanced, err := compose.InternalStreamSingleToolCall(e.toolsNode, toolNodeCtx, tc)
 	if err != nil {
 		return &eagerToolResult{err: err}
 	}
 
 	return &eagerToolResult{
-		output:         result.Output,
-		enhancedOutput: result.EnhancedOutput,
-		useEnhanced:    result.UseEnhanced,
+		sOutput:         sOutput,
+		enhancedSOutput: enhancedSOutput,
+		useEnhanced:     useEnhanced,
 	}
 }
 
@@ -249,31 +282,54 @@ func extractToolCalls[M MessageType](msg M) []schema.ToolCall {
 }
 
 type toolCallAccumulator struct {
-	id   string
-	name string
-	args strings.Builder
-	typ  string
+	id    string
+	name  string
+	args  strings.Builder
+	typ   string
+	extra map[string]any
 }
 
-func (a *toolCallAccumulator) merge(tc schema.ToolCall) {
-	if tc.ID != "" && a.id == "" {
-		a.id = tc.ID
+// merge accumulates a tool call chunk into the accumulator.
+// Conflict detection (different ID/Type/Name for the same accumulator) matches
+// the behavior of concatToolCalls in schema/message.go. Under normal model
+// streaming, conflicts should never occur for the same Index, but we detect
+// them defensively.
+func (a *toolCallAccumulator) merge(tc schema.ToolCall) error {
+	if tc.ID != "" {
+		if a.id == "" {
+			a.id = tc.ID
+		} else if a.id != tc.ID {
+			return fmt.Errorf("conflicting tool call ID in same accumulator: %q vs %q", a.id, tc.ID)
+		}
 	}
-	if tc.Function.Name != "" && a.name == "" {
-		a.name = tc.Function.Name
+	if tc.Function.Name != "" {
+		if a.name == "" {
+			a.name = tc.Function.Name
+		} else if a.name != tc.Function.Name {
+			return fmt.Errorf("conflicting tool call name in same accumulator: %q vs %q", a.name, tc.Function.Name)
+		}
 	}
-	if tc.Type != "" && a.typ == "" {
-		a.typ = tc.Type
+	if tc.Type != "" {
+		if a.typ == "" {
+			a.typ = tc.Type
+		} else if a.typ != tc.Type {
+			return fmt.Errorf("conflicting tool call type in same accumulator: %q vs %q", a.typ, tc.Type)
+		}
+	}
+	if tc.Extra != nil && a.extra == nil {
+		a.extra = tc.Extra
 	}
 	if tc.Function.Arguments != "" {
 		a.args.WriteString(tc.Function.Arguments)
 	}
+	return nil
 }
 
 func (a *toolCallAccumulator) toToolCall() schema.ToolCall {
 	return schema.ToolCall{
-		ID:   a.id,
-		Type: a.typ,
+		ID:    a.id,
+		Type:  a.typ,
+		Extra: a.extra,
 		Function: schema.FunctionCall{
 			Name:      a.name,
 			Arguments: a.args.String(),
