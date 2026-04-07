@@ -666,8 +666,7 @@ func (a *ChatModelAgent) applyBeforeAgent(ctx context.Context, ec *execContext) 
 		},
 		returnDirectly: runCtx.ReturnDirectly,
 		toolUpdated:    true,
-		rebuildGraph: (len(ec.toolsNodeConf.Tools) == 0 && len(runCtx.Tools) > 0) ||
-			(len(ec.returnDirectly) == 0 && len(runCtx.ReturnDirectly) > 0),
+		rebuildGraph:   len(ec.returnDirectly) == 0 && len(runCtx.ReturnDirectly) > 0,
 	}
 
 	toolInfos, err := genToolInfos(ctx, &runtimeEC.toolsNodeConf)
