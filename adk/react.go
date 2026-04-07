@@ -437,13 +437,31 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 	_ = g.AddEdge(compose.START, initNode_)
 	_ = g.AddEdge(initNode_, chatModel_)
 
+	const finalAnswerRejectionNode_ = "FinalAnswerRejection"
+	_ = g.AddLambdaNode(finalAnswerRejectionNode_, compose.InvokableLambda(func(ctx context.Context, _ Message) ([]Message, error) {
+		var msgs []Message
+		_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
+			msgs = st.Messages
+			return nil
+		})
+		return msgs, nil
+	}), compose.WithNodeName(finalAnswerRejectionNode_))
+	_ = g.AddEdge(finalAnswerRejectionNode_, chatModel_)
+
 	toolCallCheck := func(ctx context.Context, sMsg MessageStream) (string, error) {
 		defer sMsg.Close()
 		for {
 			chunk, err_ := sMsg.Recv()
 			if err_ != nil {
 				if err_ == io.EOF {
-					return compose.END, nil
+					accepted, err := runBeforeFinalAnswer(ctx, config.modelWrapperConf)
+					if err != nil {
+						return "", err
+					}
+					if accepted {
+						return compose.END, nil
+					}
+					return finalAnswerRejectionNode_, nil
 				}
 
 				return "", err_
@@ -454,7 +472,7 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 			}
 		}
 	}
-	branch := compose.NewStreamGraphBranch(toolCallCheck, map[string]bool{compose.END: true, cancelCheckNode_: true})
+	branch := compose.NewStreamGraphBranch(toolCallCheck, map[string]bool{compose.END: true, finalAnswerRejectionNode_: true, cancelCheckNode_: true})
 	_ = g.AddBranch(chatModel_, branch)
 
 	_ = g.AddEdge(cancelCheckNode_, toolNode_)
@@ -500,4 +518,42 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 	}
 
 	return g, nil
+}
+
+func runBeforeFinalAnswer(ctx context.Context, mwConf *modelWrapperConfig) (bool, error) {
+	if mwConf == nil || len(mwConf.handlers) == 0 {
+		return true, nil
+	}
+
+	var stateMessages []Message
+	_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
+		stateMessages = st.Messages
+		return nil
+	})
+
+	state := &ChatModelAgentState{Messages: stateMessages}
+	accepted := true
+
+	for _, handler := range mwConf.handlers {
+		var accept bool
+		var newState *ChatModelAgentState
+		var err error
+		ctx, accept, newState, err = handler.BeforeFinalAnswer(ctx, state)
+		if err != nil {
+			return false, err
+		}
+		state = newState
+		if !accept {
+			accepted = false
+		}
+	}
+
+	if !accepted {
+		_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
+			st.Messages = state.Messages
+			return nil
+		})
+	}
+
+	return accepted, nil
 }

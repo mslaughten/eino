@@ -22,6 +22,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"runtime/debug"
 	"sync"
@@ -800,35 +801,96 @@ func (a *ChatModelAgent) buildNoToolsRunFunc(_ context.Context) runFunc {
 		cancelCtx := p.cancelCtx
 		ctx = withCancelContext(ctx, cancelCtx)
 
-		wrappedModel := buildModelWrappers(a.model, &modelWrapperConfig{
+		mwConf := &modelWrapperConfig{
 			handlers:      a.handlers,
 			middlewares:   a.middlewares,
 			retryConfig:   a.modelRetryConfig,
 			cancelContext: cancelCtx,
-		})
+		}
 
-		chain := compose.NewChain[noToolsInput, Message](
-			compose.WithGenLocalState(func(ctx context.Context) (state *State) {
-				return &State{}
-			})).
-			AppendLambda(compose.InvokableLambda(func(ctx context.Context, in noToolsInput) ([]Message, error) {
-				messages, err := a.genModelInput(ctx, in.instruction, in.input)
-				if err != nil {
-					return nil, err
+		wrappedModel := buildModelWrappers(a.model, mwConf)
+
+		const (
+			initNode_  = "Init"
+			chatModel_ = "ChatModel"
+		)
+
+		maxIter := 1
+		if a.maxIterations > 0 {
+			maxIter = a.maxIterations
+		}
+
+		g := compose.NewGraph[noToolsInput, Message](compose.WithGenLocalState(func(ctx context.Context) *State {
+			st := &State{
+				AgentName: a.name,
+			}
+			st.setRemainingIterations(maxIter)
+			return st
+		}))
+
+		_ = g.AddLambdaNode(initNode_, compose.InvokableLambda(func(ctx context.Context, in noToolsInput) ([]Message, error) {
+			messages, err := a.genModelInput(ctx, in.instruction, in.input)
+			if err != nil {
+				return nil, err
+			}
+			_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
+				st.Messages = append(st.Messages, messages...)
+				return nil
+			})
+			return messages, nil
+		}), compose.WithNodeName(initNode_))
+
+		_ = g.AddChatModelNode(chatModel_, wrappedModel, compose.WithStatePreHandler(
+			func(ctx context.Context, input []Message, st *State) ([]Message, error) {
+				if st.getRemainingIterations() <= 0 {
+					return nil, ErrExceedMaxIterations
 				}
-				_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
-					st.Messages = append(st.Messages, messages...)
-					return nil
-				})
-				return messages, nil
-			})).
-			AppendChatModel(wrappedModel)
+				st.decrementRemainingIterations()
+				return input, nil
+			}), compose.WithNodeName(chatModel_))
+
+		_ = g.AddEdge(compose.START, initNode_)
+		_ = g.AddEdge(initNode_, chatModel_)
+
+		const finalAnswerRejectionNode_ = "FinalAnswerRejection"
+		_ = g.AddLambdaNode(finalAnswerRejectionNode_, compose.InvokableLambda(func(ctx context.Context, _ Message) ([]Message, error) {
+			var msgs []Message
+			_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
+				msgs = st.Messages
+				return nil
+			})
+			return msgs, nil
+		}), compose.WithNodeName(finalAnswerRejectionNode_))
+		_ = g.AddEdge(finalAnswerRejectionNode_, chatModel_)
+
+		finalAnswerCheck := func(ctx context.Context, sMsg MessageStream) (string, error) {
+			defer sMsg.Close()
+			for {
+				_, err_ := sMsg.Recv()
+				if err_ != nil {
+					if err_ == io.EOF {
+						accepted, err := runBeforeFinalAnswer(ctx, mwConf)
+						if err != nil {
+							return "", err
+						}
+						if accepted {
+							return compose.END, nil
+						}
+						return finalAnswerRejectionNode_, nil
+					}
+					return "", err_
+				}
+			}
+		}
+		branch := compose.NewStreamGraphBranch(finalAnswerCheck, map[string]bool{compose.END: true, finalAnswerRejectionNode_: true})
+		_ = g.AddBranch(chatModel_, branch)
 
 		var compileOptions []compose.GraphCompileOption
 		compileOptions = append(compileOptions,
 			compose.WithGraphName(a.name),
 			compose.WithCheckPointStore(p.store),
-			compose.WithSerializer(&gobSerializer{}))
+			compose.WithSerializer(&gobSerializer{}),
+			compose.WithMaxRunSteps(math.MaxInt))
 
 		if cancelCtx != nil {
 			var interrupt func(...compose.GraphInterruptOption)
@@ -836,7 +898,7 @@ func (a *ChatModelAgent) buildNoToolsRunFunc(_ context.Context) runFunc {
 			cancelCtx.setGraphInterruptFunc(cancelCtx.wrapGraphInterruptWithGracePeriod(interrupt))
 		}
 
-		r, err := chain.Compile(ctx, compileOptions...)
+		r, err := g.Compile(ctx, compileOptions...)
 		if err != nil {
 			p.generator.Send(&AgentEvent{Err: err})
 			return
