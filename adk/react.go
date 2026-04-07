@@ -325,9 +325,7 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 		wrappedModel = buildModelWrappers(config.model, config.modelWrapperConf)
 	}
 
-	toolsConfig := config.toolsConfig
-
-	toolsNode, err := compose.NewToolNode(ctx, toolsConfig)
+	toolsNode, err := compose.NewToolNode(ctx, config.toolsConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -341,9 +339,6 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 			return input, nil
 		}), compose.WithNodeName(chatModel_))
 
-	// CancelAfterChatModel safe-point: on the tool-calls path, after the branch
-	// has confirmed that the model response contains tool calls (i.e. not a final
-	// answer). Skipped entirely when the model produces a final answer.
 	_ = g.AddLambdaNode(cancelCheckNode_, compose.InvokableLambda(func(ctx context.Context, msg Message) (Message, error) {
 		if cancelCtx != nil && cancelCtx.shouldCancel() {
 			if cancelCtx.getMode()&CancelAfterChatModel != 0 {
@@ -385,8 +380,6 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 		compose.WithStreamStatePostHandler(toolPostHandle),
 		compose.WithNodeName(toolNode_))
 
-	// AfterToolCalls node: calls AfterToolCallsRewriteState handlers after all tool calls complete.
-	// The graph auto-materializes the ToolsNode stream into []Message before this node.
 	afterToolCalls := func(ctx context.Context, toolResults []Message) ([]Message, error) {
 		var stateMessages []Message
 		_ = compose.ProcessState(ctx, func(_ context.Context, st *State) error {
@@ -422,7 +415,6 @@ func newReact(ctx context.Context, config *reactConfig) (reactGraph, error) {
 	_ = g.AddLambdaNode(afterToolCallsNode_, compose.InvokableLambda(afterToolCalls),
 		compose.WithNodeName(afterToolCallsNode_))
 
-	// AfterToolCallsCancelCheck: CancelAfterToolCalls safe-point, separated from toolPostHandle.
 	afterToolCallsCancelCheck := func(ctx context.Context, toolResults []Message) ([]Message, error) {
 		if cancelCtx != nil && cancelCtx.shouldCancel() {
 			if cancelCtx.getMode()&CancelAfterToolCalls != 0 {
