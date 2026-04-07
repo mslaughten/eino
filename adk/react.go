@@ -316,11 +316,11 @@ func setupEagerToolExecutionProvider(config *compose.ToolsNodeConfig, eagerExecu
 	}
 	holder := &eagerCoordHolder{}
 	config.ToolExecutionProvider = func(ctx context.Context, input *schema.Message) (
-		map[string]string, map[string]*schema.ToolResult, []string, error,
+		map[string]string, map[string]*schema.ToolResult, error,
 	) {
 		coord := holder.Load()
 		if coord == nil {
-			return nil, nil, nil, nil
+			return nil, nil, nil
 		}
 		coord.waitDone(ctx)
 		return coord.collectResults()

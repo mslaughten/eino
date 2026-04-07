@@ -19,6 +19,7 @@ package adk
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -83,20 +84,18 @@ func (c *eagerCoord) waitDone(ctx context.Context) {
 func (c *eagerCoord) collectResults() (
 	executedTools map[string]string,
 	executedEnhancedTools map[string]*schema.ToolResult,
-	failedToolCallIDs []string,
 	err error,
 ) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.aborted {
-		return nil, nil, nil, nil
+		return nil, nil, nil
 	}
 
 	for callID, result := range c.results {
 		if result.err != nil {
-			failedToolCallIDs = append(failedToolCallIDs, callID)
-			continue
+			return nil, nil, fmt.Errorf("eager tool call %s failed: %w", callID, result.err)
 		}
 		if result.useEnhanced {
 			if executedEnhancedTools == nil {
@@ -111,7 +110,7 @@ func (c *eagerCoord) collectResults() (
 		}
 	}
 
-	return executedTools, executedEnhancedTools, failedToolCallIDs, nil
+	return executedTools, executedEnhancedTools, nil
 }
 
 type eagerCoordHolder struct {

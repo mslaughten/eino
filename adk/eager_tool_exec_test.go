@@ -111,7 +111,7 @@ func TestDerefIndex(t *testing.T) {
 }
 
 func TestEagerCoordLifecycle(t *testing.T) {
-	t.Run("store and collect", func(t *testing.T) {
+	t.Run("store and collect success", func(t *testing.T) {
 		coord := newEagerCoord()
 		coord.storeResult("call-1", &eagerToolResult{output: "result-1"})
 		coord.storeResult("call-2", &eagerToolResult{
@@ -122,14 +122,23 @@ func TestEagerCoordLifecycle(t *testing.T) {
 			},
 			useEnhanced: true,
 		})
-		coord.storeResult("call-3", &eagerToolResult{err: context.Canceled})
 		coord.markDone()
 
-		executed, enhanced, failed, err := coord.collectResults()
+		executed, enhanced, err := coord.collectResults()
 		assert.NoError(t, err)
 		assert.Equal(t, map[string]string{"call-1": "result-1"}, executed)
 		assert.Contains(t, enhanced, "call-2")
-		assert.Equal(t, []string{"call-3"}, failed)
+	})
+
+	t.Run("failed tool returns error", func(t *testing.T) {
+		coord := newEagerCoord()
+		coord.storeResult("call-1", &eagerToolResult{output: "result-1"})
+		coord.storeResult("call-3", &eagerToolResult{err: context.Canceled})
+		coord.markDone()
+
+		_, _, err := coord.collectResults()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "call-3")
 	})
 
 	t.Run("aborted returns nil", func(t *testing.T) {
@@ -138,11 +147,10 @@ func TestEagerCoordLifecycle(t *testing.T) {
 		coord.abort()
 		coord.markDone()
 
-		executed, enhanced, failed, err := coord.collectResults()
+		executed, enhanced, err := coord.collectResults()
 		assert.NoError(t, err)
 		assert.Nil(t, executed)
 		assert.Nil(t, enhanced)
-		assert.Nil(t, failed)
 	})
 
 	t.Run("waitDone returns after markDone", func(t *testing.T) {
@@ -449,11 +457,10 @@ func TestRunEager_DirectDispatch(t *testing.T) {
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
 
-	executed, enhanced, failed, collectErr := coord.collectResults()
+	executed, enhanced, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
 	assert.Equal(t, map[string]string{"call-1": "direct-result"}, executed)
 	assert.Empty(t, enhanced)
-	assert.Empty(t, failed)
 }
 
 func TestRunEager_StreamError(t *testing.T) {
@@ -487,11 +494,10 @@ func TestRunEager_StreamError(t *testing.T) {
 	exec.runEager(ctx, r, coord)
 
 	assert.True(t, coord.isAborted())
-	executed, enhanced, failed, collectErr := coord.collectResults()
+	executed, enhanced, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
 	assert.Nil(t, executed)
 	assert.Nil(t, enhanced)
-	assert.Nil(t, failed)
 }
 
 func TestRunEager_ChunkedAccumulation(t *testing.T) {
@@ -532,7 +538,7 @@ func TestRunEager_ChunkedAccumulation(t *testing.T) {
 	exec.runEager(ctx, stream, coord)
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
-	executed, _, _, collectErr := coord.collectResults()
+	executed, _, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
 	assert.Equal(t, map[string]string{"call-1": "acc-result"}, executed)
 }
@@ -569,7 +575,7 @@ func TestRunEager_SequentialDispatch(t *testing.T) {
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl1.callCount))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl2.callCount))
-	executed, _, _, collectErr := coord.collectResults()
+	executed, _, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
 	assert.Equal(t, "r1", executed["call-1"])
 	assert.Equal(t, "r2", executed["call-2"])
@@ -609,7 +615,7 @@ func TestRunEager_ConcurrentDispatch(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl1.callCount))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tl2.callCount))
 	assert.Less(t, elapsed, 150*time.Millisecond)
-	executed, _, _, collectErr := coord.collectResults()
+	executed, _, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
 	assert.Equal(t, "r1", executed["call-1"])
 	assert.Equal(t, "r2", executed["call-2"])
@@ -641,11 +647,10 @@ func TestRunEager_NoToolCalls(t *testing.T) {
 	exec.runEager(ctx, stream, coord)
 
 	assert.Equal(t, int32(0), atomic.LoadInt32(&tl.callCount))
-	executed, enhanced, failed, collectErr := coord.collectResults()
+	executed, enhanced, collectErr := coord.collectResults()
 	assert.NoError(t, collectErr)
 	assert.Empty(t, executed)
 	assert.Empty(t, enhanced)
-	assert.Empty(t, failed)
 }
 
 func TestRunEager_UnknownTool(t *testing.T) {
@@ -675,10 +680,9 @@ func TestRunEager_UnknownTool(t *testing.T) {
 
 	exec.runEager(ctx, stream, coord)
 
-	executed, _, failed, collectErr := coord.collectResults()
-	assert.NoError(t, collectErr)
-	assert.Empty(t, executed)
-	assert.Equal(t, []string{"call-1"}, failed)
+	_, _, collectErr := coord.collectResults()
+	assert.Error(t, collectErr)
+	assert.Contains(t, collectErr.Error(), "call-1")
 }
 
 func TestEagerCoordHolder_StoreAndLoad(t *testing.T) {

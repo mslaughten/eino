@@ -69,7 +69,7 @@ type ToolsNode struct {
 	streamToolCallMiddlewares         []StreamableToolMiddleware
 	enhancedToolCallMiddlewares       []EnhancedInvokableToolMiddleware
 	enhancedStreamToolCallMiddlewares []EnhancedStreamableToolMiddleware
-	toolExecutionProvider             func(ctx context.Context, input *schema.Message) (map[string]string, map[string]*schema.ToolResult, []string, error)
+	toolExecutionProvider             func(ctx context.Context, input *schema.Message) (map[string]string, map[string]*schema.ToolResult, error)
 }
 
 // ToolInput represents the input parameters for a tool call execution.
@@ -191,12 +191,13 @@ type ToolsNodeConfig struct {
 	// Streamable middleware only applies to tools implementing StreamableTool interface.
 	ToolCallMiddlewares []ToolMiddleware
 
-	// ToolExecutionProvider, when set, supplies pre-executed tool results to the ToolsNode.
-	// The ToolsNode will call this function before executing tools itself. Any tool call IDs
-	// present in the returned maps are treated as already executed and will not be re-invoked.
-	// Tool call IDs listed in failedToolCallIDs are re-executed by the ToolsNode.
+	// ToolExecutionProvider, when set, delegates all tool execution to the provider.
+	// The ToolsNode will call this function instead of executing tools itself.
+	// Any tool call IDs present in the returned maps are treated as already executed.
+	// If a tool failed during eager execution, the provider returns an error,
+	// causing the ToolsNode to fail as it would for a normal tool failure.
 	// This is used internally by the eager tool execution middleware.
-	ToolExecutionProvider func(ctx context.Context, input *schema.Message) (executedTools map[string]string, executedEnhancedTools map[string]*schema.ToolResult, failedToolCallIDs []string, err error)
+	ToolExecutionProvider func(ctx context.Context, input *schema.Message) (executedTools map[string]string, executedEnhancedTools map[string]*schema.ToolResult, err error)
 }
 
 // NewToolNode creates a new ToolsNode.
@@ -817,7 +818,7 @@ func (tn *ToolsNode) Invoke(ctx context.Context, input *schema.Message,
 			executedEnhancedTools = tnState.ExecutedEnhancedTools
 		}
 	} else if tn.toolExecutionProvider != nil {
-		eagerExecuted, eagerEnhanced, _, providerErr := tn.toolExecutionProvider(ctx, input)
+		eagerExecuted, eagerEnhanced, providerErr := tn.toolExecutionProvider(ctx, input)
 		if providerErr != nil {
 			return nil, providerErr
 		}
@@ -926,7 +927,7 @@ func (tn *ToolsNode) Stream(ctx context.Context, input *schema.Message,
 			executedEnhancedTools = tnState.ExecutedEnhancedTools
 		}
 	} else if tn.toolExecutionProvider != nil {
-		eagerExecuted, eagerEnhanced, _, providerErr := tn.toolExecutionProvider(ctx, input)
+		eagerExecuted, eagerEnhanced, providerErr := tn.toolExecutionProvider(ctx, input)
 		if providerErr != nil {
 			return nil, providerErr
 		}
