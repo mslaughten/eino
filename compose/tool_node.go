@@ -710,6 +710,9 @@ func runToolCallTaskByInvoke(ctx context.Context, task *toolCallTask, opts ...to
 }
 
 func runToolCallTaskByStream(ctx context.Context, task *toolCallTask, opts ...tool.Option) {
+	if task.executed {
+		return
+	}
 	ctx = callbacks.ReuseHandlers(ctx, &callbacks.RunInfo{
 		Name:      task.name,
 		Type:      task.meta.componentImplType,

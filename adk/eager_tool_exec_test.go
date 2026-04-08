@@ -968,3 +968,413 @@ func TestEagerToolExecution_GenerateMode(t *testing.T) {
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tool1.callCount))
 }
+
+func TestToolCallAccumulator_MergeConflicts(t *testing.T) {
+	t.Run("conflicting ID", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		err := acc.merge(schema.ToolCall{ID: "call-1"})
+		require.NoError(t, err)
+		err = acc.merge(schema.ToolCall{ID: "call-2"})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "conflicting tool call ID")
+	})
+
+	t.Run("conflicting name", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		err := acc.merge(schema.ToolCall{Function: schema.FunctionCall{Name: "tool_a"}})
+		require.NoError(t, err)
+		err = acc.merge(schema.ToolCall{Function: schema.FunctionCall{Name: "tool_b"}})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "conflicting tool call name")
+	})
+
+	t.Run("conflicting type", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		err := acc.merge(schema.ToolCall{Type: "function"})
+		require.NoError(t, err)
+		err = acc.merge(schema.ToolCall{Type: "other"})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "conflicting tool call type")
+	})
+
+	t.Run("same values do not conflict", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		err := acc.merge(schema.ToolCall{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: "tool_a"}})
+		require.NoError(t, err)
+		err = acc.merge(schema.ToolCall{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: "tool_a", Arguments: `{"x":1}`}})
+		assert.NoError(t, err)
+		tc := acc.toToolCall()
+		assert.Equal(t, "call-1", tc.ID)
+		assert.Equal(t, "function", tc.Type)
+		assert.Equal(t, "tool_a", tc.Function.Name)
+		assert.Equal(t, `{"x":1}`, tc.Function.Arguments)
+	})
+}
+
+func TestToolCallAccumulator_Extra(t *testing.T) {
+	t.Run("extra set on first merge", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		extra := map[string]any{"key": "value"}
+		err := acc.merge(schema.ToolCall{Extra: extra})
+		require.NoError(t, err)
+		tc := acc.toToolCall()
+		assert.Equal(t, extra, tc.Extra)
+	})
+
+	t.Run("extra not overwritten on second merge", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		err := acc.merge(schema.ToolCall{Extra: map[string]any{"first": true}})
+		require.NoError(t, err)
+		err = acc.merge(schema.ToolCall{Extra: map[string]any{"second": true}})
+		require.NoError(t, err)
+		tc := acc.toToolCall()
+		assert.Equal(t, map[string]any{"first": true}, tc.Extra)
+	})
+
+	t.Run("nil extra preserved", func(t *testing.T) {
+		acc := &toolCallAccumulator{}
+		err := acc.merge(schema.ToolCall{ID: "call-1"})
+		require.NoError(t, err)
+		tc := acc.toToolCall()
+		assert.Nil(t, tc.Extra)
+	})
+}
+
+func TestEagerCoord_CollectResults_Empty(t *testing.T) {
+	coord := newEagerCoord()
+	coord.markDone()
+
+	executed, enhanced, err := coord.collectResults()
+	assert.NoError(t, err)
+	assert.Nil(t, executed)
+	assert.Nil(t, enhanced)
+}
+
+func TestEagerCoord_MarkDone_Idempotent(t *testing.T) {
+	coord := newEagerCoord()
+	coord.markDone()
+	coord.markDone()
+
+	done := make(chan struct{})
+	go func() {
+		coord.waitDone(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("waitDone should return immediately after markDone")
+	}
+}
+
+func TestExtractToolCalls_AgenticMessage_NilFunctionToolCall(t *testing.T) {
+	msg := &schema.AgenticMessage{
+		ContentBlocks: []*schema.ContentBlock{
+			{
+				Type:             schema.ContentBlockTypeFunctionToolCall,
+				FunctionToolCall: nil,
+			},
+			{
+				Type:             schema.ContentBlockTypeAssistantGenText,
+				AssistantGenText: &schema.AssistantGenText{Text: "text"},
+			},
+		},
+	}
+	tcs := extractToolCalls(msg)
+	assert.Empty(t, tcs)
+}
+
+func TestRunEager_DispatchAborted(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "should-not-run"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+	coord.abort()
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"x"}`}},
+		}),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&tl.callCount))
+	assert.True(t, coord.isAborted())
+	executed, enhanced, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Nil(t, executed)
+	assert.Nil(t, enhanced)
+}
+
+func TestRunEager_NilIndexMultipleToolIDs(t *testing.T) {
+	ctx := context.Background()
+
+	tl1 := &eagerTestTool{name: "tool1", result: "r1"}
+	tl2 := &eagerTestTool{name: "tool2", result: "r2"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl1, tl2},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"inp`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Function: schema.FunctionCall{Arguments: `ut":"a"}`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "call-2", Function: schema.FunctionCall{Name: "tool2", Arguments: `{"inp`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Function: schema.FunctionCall{Arguments: `ut":"b"}`}},
+			},
+		},
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl1.callCount))
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl2.callCount))
+	executed, _, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	collected := collectStringStreams(t, executed)
+	assert.Equal(t, "r1", collected["call-1"])
+	assert.Equal(t, "r2", collected["call-2"])
+}
+
+func TestRunEager_MergeErrorAborts(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "ok"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	idx0 := 0
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"inp`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, ID: "call-2", Function: schema.FunctionCall{Name: "tool1", Arguments: `ut":"x"}`}},
+			},
+		},
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.True(t, coord.isAborted())
+	executed, enhanced, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Nil(t, executed)
+	assert.Nil(t, enhanced)
+}
+
+func TestRunEager_PostLoopFlush(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "flushed"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	idx0 := 0
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, Function: schema.FunctionCall{Arguments: `"test"`}},
+			},
+		},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, Function: schema.FunctionCall{Arguments: `}`}},
+			},
+		},
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
+	executed, _, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Equal(t, map[string]string{"call-1": "flushed"}, collectStringStreams(t, executed))
+}
+
+func TestRunEager_SequentialDispatchAborted(t *testing.T) {
+	ctx := context.Background()
+
+	tl1 := &eagerTestTool{name: "tool1", result: "r1"}
+	tl2 := &eagerTestTool{name: "tool2", result: "r2"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl1, tl2},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:           tn,
+		toolNodeKey:         "ToolNode",
+		coordPtr:            coordPtr,
+		executeSequentially: true,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+	coord.abort()
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"a"}`}},
+			{ID: "call-2", Function: schema.FunctionCall{Name: "tool2", Arguments: `{"input":"b"}`}},
+		}),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&tl1.callCount))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&tl2.callCount))
+}
+
+func TestRunEager_DuplicateIDSkipped(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "once"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"a"}`}},
+			{ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":"a"}`}},
+		}),
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tl.callCount))
+	executed, _, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Equal(t, map[string]string{"call-1": "once"}, collectStringStreams(t, executed))
+}
+
+func TestRunEager_PostLoopSkipsIncomplete(t *testing.T) {
+	ctx := context.Background()
+
+	tl := &eagerTestTool{name: "tool1", result: "unused"}
+	tn, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{
+		Tools: []tool.BaseTool{tl},
+	})
+	require.NoError(t, err)
+
+	coordPtr := &eagerCoordHolder{}
+	exec := &eagerToolExecutorMiddleware[*schema.Message]{
+		toolsNode:   tn,
+		toolNodeKey: "ToolNode",
+		coordPtr:    coordPtr,
+	}
+
+	coord := newEagerCoord()
+	coordPtr.Store(coord)
+
+	idx0 := 0
+	stream := schema.StreamReaderFromArray([]*schema.Message{
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{Index: &idx0, ID: "call-1", Function: schema.FunctionCall{Name: "tool1", Arguments: `{"input":`}},
+			},
+		},
+	})
+
+	exec.runEager(ctx, stream, coord)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&tl.callCount))
+	executed, enhanced, collectErr := coord.collectResults()
+	assert.NoError(t, collectErr)
+	assert.Empty(t, executed)
+	assert.Empty(t, enhanced)
+}
