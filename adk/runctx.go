@@ -124,6 +124,15 @@ func (e *typedAgentEventWrapper[M]) GobDecode(b []byte) error {
 	return nil
 }
 
+// consumeStream drains the typed message stream, setting concatenatedMessage on success
+// or StreamErr on failure. The stream is replaced with a materialized version safe for
+// gob encoding.
+//
+// NOTE: This method parallels agentEventWrapper.consumeStream in utils.go. The two
+// implementations exist because agentEventWrapper is non-generic (uses *schema.Message
+// directly) while typedAgentEventWrapper[M] is generic. They cannot be unified without
+// making the non-generic wrapper generic, which would cascade through the entire
+// non-generic event storage layer.
 func (e *typedAgentEventWrapper[M]) consumeStream() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -317,6 +326,18 @@ func addTypedEvent[M MessageType](session *runSession, event *TypedAgentEvent[M]
 	session.mtx.Unlock()
 }
 
+// getTypedEvents retrieves all typed agent events from a session, combining committed
+// events with in-flight lane events.
+//
+// Lane model overview:
+// When agents run in parallel (e.g., parallel sub-agents in a transfer), each branch
+// gets a "lane" — a child session created by forkTypedRunCtx that shares the parent's
+// committed event store but has its own local event slice (typedLaneEventsOf[M]).
+// Lanes form a linked list via Parent pointers. When a parallel join completes
+// (joinTypedRunCtxs), lane events are sorted by timestamp and committed to the parent.
+//
+// This function walks the lane chain from leaf to root, collecting events in reverse
+// (newest lane first), then prepends committed events, yielding chronological order.
 func getTypedEvents[M MessageType](session *runSession) []*typedAgentEventWrapper[M] {
 	var zero M
 	if _, ok := any(zero).(*schema.Message); ok {

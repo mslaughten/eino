@@ -55,6 +55,7 @@ type InterruptInfo struct {
 }
 
 // TypedInterrupt creates a typed interrupt event that pauses execution to request external input.
+// It is the generic counterpart of Interrupt; see Interrupt for full documentation.
 func TypedInterrupt[M MessageType](ctx context.Context, info any) *TypedAgentEvent[M] {
 	var rp []RunStep
 	rCtx := getRunCtx(ctx)
@@ -89,6 +90,7 @@ func Interrupt(ctx context.Context, info any) *AgentEvent {
 }
 
 // TypedStatefulInterrupt creates a typed interrupt event that also saves the agent's internal state.
+// It is the generic counterpart of StatefulInterrupt; see StatefulInterrupt for full documentation.
 func TypedStatefulInterrupt[M MessageType](ctx context.Context, info any, state any) *TypedAgentEvent[M] {
 	var rp []RunStep
 	rCtx := getRunCtx(ctx)
@@ -123,6 +125,7 @@ func StatefulInterrupt(ctx context.Context, info any, state any) *AgentEvent {
 }
 
 // TypedCompositeInterrupt creates a typed interrupt event that aggregates sub-interrupt signals.
+// It is the generic counterpart of CompositeInterrupt; see CompositeInterrupt for full documentation.
 func TypedCompositeInterrupt[M MessageType](ctx context.Context, info any, state any,
 	subInterruptSignals ...*InterruptSignal) *TypedAgentEvent[M] {
 	var rp []RunStep

@@ -211,6 +211,7 @@ func gobDecodeAgenticMessageVariant(mv *TypedMessageVariant[*schema.AgenticMessa
 }
 
 // TypedEventFromMessage creates a TypedAgentEvent containing the given message and optional stream.
+// It is the generic counterpart of EventFromMessage; see EventFromMessage for full documentation.
 func TypedEventFromMessage[M MessageType](msg M, msgStream *schema.StreamReader[M],
 	role schema.RoleType, toolName string) *TypedAgentEvent[M] {
 	return &TypedAgentEvent[M]{
