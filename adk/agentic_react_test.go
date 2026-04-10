@@ -235,6 +235,8 @@ func TestAgenticReact_BasicInvoke(t *testing.T) {
 
 	require.NotNil(t, last)
 	require.Nil(t, last.Err)
+	require.NotNil(t, last.Output)
+	require.NotNil(t, last.Output.MessageOutput)
 	assert.Equal(t, "done: echo result received", agenticTextContent(last.Output.MessageOutput.Message))
 	assert.Equal(t, int32(2), atomic.LoadInt32(&mdl.callCount))
 }
@@ -257,6 +259,8 @@ func TestAgenticReact_MultiTurnToolCalling(t *testing.T) {
 
 	require.NotNil(t, last)
 	require.Nil(t, last.Err)
+	require.NotNil(t, last.Output)
+	require.NotNil(t, last.Output.MessageOutput)
 	assert.Equal(t, "all done", agenticTextContent(last.Output.MessageOutput.Message))
 	assert.Equal(t, int32(4), atomic.LoadInt32(&mdl.callCount))
 }
@@ -313,6 +317,8 @@ func TestAgenticReact_MaxIterations(t *testing.T) {
 
 		require.NotNil(t, last)
 		require.Nil(t, last.Err)
+		require.NotNil(t, last.Output)
+		require.NotNil(t, last.Output.MessageOutput)
 		assert.Equal(t, "done within limit", agenticTextContent(last.Output.MessageOutput.Message))
 	})
 
@@ -349,135 +355,6 @@ func TestAgenticReact_MaxIterations(t *testing.T) {
 
 func TestAgenticReact_ReturnDirectly(t *testing.T) {
 	t.Skip("returnDirectly for agentic agents depends on typed eventSenderToolHandler; not yet supported")
-}
-
-func TestAgenticReact_InterruptResumeRoundTrip(t *testing.T) {
-	ctx := context.Background()
-
-	var modelCallCount int32
-	mdl := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			count := atomic.AddInt32(&modelCallCount, 1)
-			switch count {
-			case 1:
-				return agenticToolCallMsg("approval_tool", "call-int", `"check"`), nil
-			case 2:
-				for _, msg := range input {
-					for _, b := range msg.ContentBlocks {
-						if b.FunctionToolResult != nil && b.FunctionToolResult.CallID == "call-int" {
-							return agenticMsg("completed with: " + b.FunctionToolResult.Result), nil
-						}
-					}
-				}
-				return agenticMsg("completed no result"), nil
-			default:
-				return nil, fmt.Errorf("unexpected call #%d", count)
-			}
-		},
-	}
-
-	store := &agenticReactTestStore{m: map[string][]byte{}}
-	runner := newAgenticRunnerWithStore(t, ctx, mdl, []tool.BaseTool{&agenticInterruptTool{name: "approval_tool"}}, store)
-
-	events := drainAgenticEvents(runner.Query(ctx, "please approve", WithCheckPointID("cp-1")))
-	interruptEvent := findInterruptEvent(events)
-
-	require.NotNil(t, interruptEvent, "expected an interrupt event")
-	require.NotEmpty(t, interruptEvent.Action.Interrupted.InterruptContexts)
-
-	_, hasData, _ := store.Get(ctx, "cp-1")
-	assert.True(t, hasData, "checkpoint should be saved after interrupt")
-
-	interruptID := interruptEvent.Action.Interrupted.InterruptContexts[0].ID
-
-	iter2, err := runner.ResumeWithParams(ctx, "cp-1", &ResumeParams{
-		Targets: map[string]any{interruptID: "yes_approved"},
-	})
-	require.NoError(t, err)
-
-	events2 := drainAgenticEvents(iter2)
-	last := lastAgenticEvent(events2)
-
-	require.NotNil(t, last)
-	require.Nil(t, last.Err, "last event should not have an error")
-	require.NotNil(t, last.Output)
-	require.NotNil(t, last.Output.MessageOutput)
-
-	finalMsg := last.Output.MessageOutput.Message
-	require.NotNil(t, finalMsg)
-	assert.Contains(t, agenticTextContent(finalMsg), "approved:yes_approved")
-}
-
-func TestAgenticReact_StateGobRoundTrip(t *testing.T) {
-	ctx := context.Background()
-
-	richMsg := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "thinking..."}),
-			{
-				Type: schema.ContentBlockTypeFunctionToolCall,
-				FunctionToolCall: &schema.FunctionToolCall{
-					Name:      "my_tool",
-					CallID:    "tc-123",
-					Arguments: `{"key": "value"}`,
-				},
-			},
-		},
-	}
-
-	var modelCallCount int32
-	mdl := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			count := atomic.AddInt32(&modelCallCount, 1)
-			switch count {
-			case 1:
-				return richMsg, nil
-			case 2:
-				hasToolResult := false
-				for _, msg := range input {
-					for _, b := range msg.ContentBlocks {
-						if b.FunctionToolResult != nil && b.FunctionToolResult.CallID == "tc-123" {
-							hasToolResult = true
-						}
-					}
-				}
-				if !hasToolResult {
-					return nil, fmt.Errorf("expected tool result in resumed input")
-				}
-				return agenticMsg("done after resume"), nil
-			default:
-				return nil, fmt.Errorf("unexpected call #%d", count)
-			}
-		},
-	}
-
-	store := &agenticReactTestStore{m: map[string][]byte{}}
-	runner := newAgenticRunnerWithStore(t, ctx, mdl, []tool.BaseTool{&agenticInterruptTool{name: "my_tool"}}, store)
-
-	events := drainAgenticEvents(runner.Query(ctx, "test gob roundtrip", WithCheckPointID("gob-cp")))
-	interruptEvent := findInterruptEvent(events)
-	require.NotNil(t, interruptEvent)
-
-	data, exists, err := store.Get(ctx, "gob-cp")
-	require.NoError(t, err)
-	require.True(t, exists)
-	require.NotEmpty(t, data, "checkpoint data should be non-empty")
-
-	interruptID := interruptEvent.Action.Interrupted.InterruptContexts[0].ID
-	iter2, err := runner.ResumeWithParams(ctx, "gob-cp", &ResumeParams{
-		Targets: map[string]any{interruptID: "resumed_data"},
-	})
-	require.NoError(t, err)
-
-	events2 := drainAgenticEvents(iter2)
-	last := lastAgenticEvent(events2)
-
-	require.NotNil(t, last)
-	require.Nil(t, last.Err)
-	require.NotNil(t, last.Output)
-	require.NotNil(t, last.Output.MessageOutput)
-	assert.Contains(t, agenticTextContent(last.Output.MessageOutput.Message), "done after resume")
 }
 
 func TestAgenticReact_CancelAfterChatModel(t *testing.T) {
@@ -522,18 +399,19 @@ func TestAgenticReact_CancelAfterChatModel(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	slowTool.finish()
 
-	var foundCancel bool
+	var capturedErr error
 	for {
 		ev, ok := iter.Next()
 		if !ok {
 			break
 		}
-		var cancelErr *CancelError
-		if ev.Err != nil && errors.As(ev.Err, &cancelErr) {
-			foundCancel = true
+		if ev.Err != nil {
+			capturedErr = ev.Err
 		}
 	}
-	assert.True(t, foundCancel, "expected CancelError event")
+	require.Error(t, capturedErr, "expected CancelError event")
+	var cancelErr *CancelError
+	assert.True(t, errors.As(capturedErr, &cancelErr))
 }
 
 func TestAgenticReact_CancelAfterToolCalls(t *testing.T) {
@@ -574,18 +452,19 @@ func TestAgenticReact_CancelAfterToolCalls(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	slowTool.finish()
 
-	var foundCancel bool
+	var capturedErr error
 	for {
 		ev, ok := iter.Next()
 		if !ok {
 			break
 		}
-		var cancelErr *CancelError
-		if ev.Err != nil && errors.As(ev.Err, &cancelErr) {
-			foundCancel = true
+		if ev.Err != nil {
+			capturedErr = ev.Err
 		}
 	}
-	assert.True(t, foundCancel, "expected CancelError event")
+	require.Error(t, capturedErr, "expected CancelError event")
+	var cancelErr *CancelError
+	assert.True(t, errors.As(capturedErr, &cancelErr))
 	assert.Equal(t, int32(1), atomic.LoadInt32(&modelCallCount))
 }
 
@@ -638,6 +517,7 @@ func TestAgenticReact_DoubleInterruptResume(t *testing.T) {
 	require.NotNil(t, last)
 	require.Nil(t, last.Err)
 	require.NotNil(t, last.Output)
+	require.NotNil(t, last.Output.MessageOutput)
 	assert.Contains(t, agenticTextContent(last.Output.MessageOutput.Message), "all approved")
 }
 
@@ -656,6 +536,8 @@ func TestAgenticReact_ChatModelAgent_NoTools(t *testing.T) {
 
 	require.NotNil(t, last)
 	require.Nil(t, last.Err)
+	require.NotNil(t, last.Output)
+	require.NotNil(t, last.Output.MessageOutput)
 	assert.Equal(t, "no tools response", agenticTextContent(last.Output.MessageOutput.Message))
 }
 
@@ -985,17 +867,17 @@ func TestCoverage_ChatModelAgent_StreamError(t *testing.T) {
 
 	iter := runner.Query(ctx, "trigger stream error")
 
-	var foundErr bool
+	var capturedErr error
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
-			foundErr = true
+			capturedErr = event.Err
 		}
 	}
-	assert.True(t, foundErr, "should propagate stream error")
+	require.Error(t, capturedErr, "should propagate stream error")
 }
 
 func TestCoverage_AgenticReact_GobStateRoundTrip(t *testing.T) {

@@ -108,84 +108,13 @@ func newAgenticRecordingHandler(recorder *agenticCallbackRecorder) callbacks.Han
 		Build()
 }
 
-func TestAgenticCallbackOnStartInvocation(t *testing.T) {
+func TestAgenticCallback(t *testing.T) {
 	ctx := context.Background()
 
+	expectedContent := "This is the test response content"
 	m := &mockAgenticModel{
 		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return agenticMsg("test response"), nil
-		},
-	}
-
-	agent, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        "TestAgent",
-		Description: "Test agent for callback",
-		Instruction: "You are a test agent",
-		Model:       m,
-	})
-	assert.NoError(t, err)
-
-	recorder := &agenticCallbackRecorder{}
-	handler := newAgenticRecordingHandler(recorder)
-
-	runner := NewTypedRunner[*schema.AgenticMessage](TypedRunnerConfig[*schema.AgenticMessage]{Agent: agent})
-	iter := runner.Query(ctx, "hello", WithCallbacks(handler))
-	for {
-		_, ok := iter.Next()
-		if !ok {
-			break
-		}
-	}
-
-	<-recorder.eventsDone
-
-	assert.True(t, recorder.onStartCalled, "OnStart should be called")
-	assert.NotNil(t, recorder.inputReceived, "Input should be received")
-	assert.NotNil(t, recorder.inputReceived.Input, "AgentInput should be set")
-	assert.Len(t, recorder.inputReceived.Input.Messages, 1)
-}
-
-func TestAgenticCallbackOnEndInvocation(t *testing.T) {
-	ctx := context.Background()
-
-	m := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return agenticMsg("test response"), nil
-		},
-	}
-
-	agent, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        "TestAgent",
-		Description: "Test agent for callback",
-		Instruction: "You are a test agent",
-		Model:       m,
-	})
-	assert.NoError(t, err)
-
-	recorder := &agenticCallbackRecorder{}
-	handler := newAgenticRecordingHandler(recorder)
-
-	runner := NewTypedRunner[*schema.AgenticMessage](TypedRunnerConfig[*schema.AgenticMessage]{Agent: agent})
-	iter := runner.Query(ctx, "hello", WithCallbacks(handler))
-	for {
-		_, ok := iter.Next()
-		if !ok {
-			break
-		}
-	}
-
-	<-recorder.eventsDone
-
-	assert.True(t, recorder.onEndCalled, "OnEnd should be called")
-	assert.NotEmpty(t, recorder.eventsReceived, "Events should be received")
-}
-
-func TestAgenticCallbackRunInfo(t *testing.T) {
-	ctx := context.Background()
-
-	m := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return agenticMsg("test response"), nil
+			return agenticMsg(expectedContent), nil
 		},
 	}
 
@@ -195,25 +124,59 @@ func TestAgenticCallbackRunInfo(t *testing.T) {
 		Instruction: "You are a test agent",
 		Model:       m,
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	recorder := &agenticCallbackRecorder{}
 	handler := newAgenticRecordingHandler(recorder)
 
+	var agentEvents []*TypedAgentEvent[*schema.AgenticMessage]
 	runner := NewTypedRunner[*schema.AgenticMessage](TypedRunnerConfig[*schema.AgenticMessage]{Agent: agent})
 	iter := runner.Query(ctx, "hello", WithCallbacks(handler))
 	for {
-		_, ok := iter.Next()
+		event, ok := iter.Next()
 		if !ok {
 			break
 		}
+		agentEvents = append(agentEvents, event)
 	}
 
 	<-recorder.eventsDone
 
-	assert.NotNil(t, recorder.runInfo)
-	assert.Equal(t, "TestChatAgent", recorder.runInfo.Name)
-	assert.Equal(t, ComponentOfAgentic, recorder.runInfo.Component)
+	t.Run("OnStart_Invocation", func(t *testing.T) {
+		assert.True(t, recorder.getOnStartCalled(), "OnStart should be called")
+		require.NotNil(t, recorder.inputReceived, "Input should be received")
+		require.NotNil(t, recorder.inputReceived.Input, "AgentInput should be set")
+		assert.Len(t, recorder.inputReceived.Input.Messages, 1)
+	})
+
+	t.Run("OnEnd_Invocation", func(t *testing.T) {
+		assert.True(t, recorder.getOnEndCalled(), "OnEnd should be called")
+		assert.Len(t, recorder.getEventsReceived(), 1)
+	})
+
+	t.Run("RunInfo_Fields", func(t *testing.T) {
+		require.NotNil(t, recorder.runInfo)
+		assert.Equal(t, "TestChatAgent", recorder.runInfo.Name)
+		assert.Equal(t, ComponentOfAgentic, recorder.runInfo.Component)
+	})
+
+	t.Run("Events_MatchAgentOutput", func(t *testing.T) {
+		require.NotEmpty(t, agentEvents, "Agent should emit events")
+		received := recorder.getEventsReceived()
+		require.NotEmpty(t, received, "Callback should receive events")
+
+		var foundExpectedContent bool
+		for _, event := range received {
+			if event.Output != nil && event.Output.MessageOutput != nil {
+				msg := event.Output.MessageOutput.Message
+				if msg != nil && agenticTextContent(msg) == expectedContent {
+					foundExpectedContent = true
+					break
+				}
+			}
+		}
+		require.True(t, foundExpectedContent, "Callback events should contain the expected content")
+	})
 }
 
 func TestAgenticCallbackMultipleHandlers(t *testing.T) {
@@ -257,56 +220,6 @@ func TestAgenticCallbackMultipleHandlers(t *testing.T) {
 
 	assert.NotEmpty(t, recorder1.eventsReceived, "Handler1 should receive events")
 	assert.NotEmpty(t, recorder2.eventsReceived, "Handler2 should receive events")
-}
-
-func TestAgenticCallbackEventsMatchAgentOutput(t *testing.T) {
-	ctx := context.Background()
-
-	expectedContent := "This is the test response content"
-	m := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return agenticMsg(expectedContent), nil
-		},
-	}
-
-	agent, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        "TestAgent",
-		Description: "Test agent",
-		Instruction: "You are a test agent",
-		Model:       m,
-	})
-	assert.NoError(t, err)
-
-	recorder := &agenticCallbackRecorder{}
-	handler := newAgenticRecordingHandler(recorder)
-
-	var agentEvents []*TypedAgentEvent[*schema.AgenticMessage]
-	runner := NewTypedRunner[*schema.AgenticMessage](TypedRunnerConfig[*schema.AgenticMessage]{Agent: agent})
-	iter := runner.Query(ctx, "hello", WithCallbacks(handler))
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		agentEvents = append(agentEvents, event)
-	}
-
-	<-recorder.eventsDone
-
-	assert.NotEmpty(t, agentEvents, "Agent should emit events")
-	assert.NotEmpty(t, recorder.eventsReceived, "Callback should receive events")
-
-	foundExpectedContent := false
-	for _, event := range recorder.eventsReceived {
-		if event.Output != nil && event.Output.MessageOutput != nil {
-			msg := event.Output.MessageOutput.Message
-			if msg != nil && agenticTextContent(msg) == expectedContent {
-				foundExpectedContent = true
-				break
-			}
-		}
-	}
-	assert.True(t, foundExpectedContent, "Callback events should contain the expected content")
 }
 
 func TestAgenticCallbackWithSequentialWorkflow(t *testing.T) {

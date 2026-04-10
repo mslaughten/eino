@@ -91,11 +91,11 @@ func TestAgenticIntegration_ChatModelSingleShot(t *testing.T) {
 		events = append(events, event)
 	}
 
-	require.GreaterOrEqual(t, len(events), 1)
+	require.Len(t, events, 1)
 	lastEvent := events[len(events)-1]
-	assert.Nil(t, lastEvent.Err)
-	assert.NotNil(t, lastEvent.Output)
-	assert.NotNil(t, lastEvent.Output.MessageOutput)
+	require.Nil(t, lastEvent.Err)
+	require.NotNil(t, lastEvent.Output)
+	require.NotNil(t, lastEvent.Output.MessageOutput)
 	assert.Equal(t, "Handled internally with tool result: 42",
 		agenticTextContent(lastEvent.Output.MessageOutput.Message))
 }
@@ -187,8 +187,8 @@ func TestAgenticIntegration_StreamingWithRunner(t *testing.T) {
 	event, ok := iter.Next()
 	require.True(t, ok)
 	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
 
 	if event.Output.MessageOutput.IsStreaming {
 		require.NotNil(t, event.Output.MessageOutput.MessageStream)
@@ -200,7 +200,7 @@ func TestAgenticIntegration_StreamingWithRunner(t *testing.T) {
 			}
 			chunks = append(chunks, chunk)
 		}
-		assert.GreaterOrEqual(t, len(chunks), 1)
+		assert.Equal(t, 2, len(chunks))
 	} else {
 		assert.NotNil(t, event.Output.MessageOutput.Message)
 	}
@@ -250,17 +250,18 @@ func TestAgenticIntegration_CancelDuringExecution(t *testing.T) {
 	<-modelStarted
 	cancel()
 
-	var foundErr bool
+	var capturedErr error
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
-			foundErr = true
+			capturedErr = event.Err
 		}
 	}
-	assert.True(t, foundErr, "should propagate cancel error")
+	require.Error(t, capturedErr, "should propagate cancel error")
+	assert.ErrorIs(t, capturedErr, context.Canceled)
 }
 
 func TestAgenticIntegration_CancelWithTimeout(t *testing.T) {
@@ -301,18 +302,19 @@ func TestAgenticIntegration_CancelWithTimeout(t *testing.T) {
 		schema.UserAgenticMessage("slow request"),
 	})
 
-	var gotError bool
+	var capturedErr error
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
-			gotError = true
+			capturedErr = event.Err
 		}
 	}
 
-	assert.True(t, gotError, "should get timeout/cancel error")
+	require.Error(t, capturedErr, "should get timeout/cancel error")
+	assert.ErrorIs(t, capturedErr, context.DeadlineExceeded)
 }
 
 func TestAgenticIntegration_NestedParallelWorkflow(t *testing.T) {
@@ -373,7 +375,7 @@ func TestAgenticIntegration_NestedParallelWorkflow(t *testing.T) {
 	assert.Contains(t, outputs, "inner1 out")
 	assert.Contains(t, outputs, "inner2 out")
 	assert.Contains(t, outputs, "successor out")
-	assert.GreaterOrEqual(t, len(outputs), 4)
+	assert.Equal(t, 4, len(outputs))
 }
 
 func TestAgenticIntegration_AgentTool(t *testing.T) {
@@ -432,7 +434,7 @@ func TestAgenticIntegration_AgentTool(t *testing.T) {
 		events = append(events, event)
 	}
 
-	require.GreaterOrEqual(t, len(events), 1)
+	require.NotEmpty(t, events)
 	lastEvent := events[len(events)-1]
 	assert.Nil(t, lastEvent.Err)
 	assert.NotNil(t, lastEvent.Output)
@@ -577,7 +579,7 @@ func TestAgenticIntegration_DeterministicTransfer(t *testing.T) {
 		}
 	}
 
-	assert.True(t, transferFound, "transfer event should be emitted")
+	require.True(t, transferFound, "transfer event should be emitted")
 	assert.Contains(t, outputs, "outer message")
 	assert.Contains(t, outputs, "inner completed")
 }

@@ -85,14 +85,14 @@ func TestAgenticChatModelAgentRun_NoTools(t *testing.T) {
 		},
 	}
 	iter := agent.Run(ctx, input)
-	assert.NotNil(t, iter)
+	require.NotNil(t, iter)
 
 	event, ok := iter.Next()
 	assert.True(t, ok)
-	assert.NotNil(t, event)
+	require.NotNil(t, event)
 	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
 
 	msg := event.Output.MessageOutput.Message
 	assert.NotNil(t, msg)
@@ -154,8 +154,7 @@ func TestAgenticChatModelAgentRun_WithTools(t *testing.T) {
 	_, ok = iter.Next()
 	assert.False(t, ok)
 
-	assert.NotNil(t, receivedToolInfos, "model.WithTools option should be passed to Generate")
-	assert.Equal(t, 1, len(receivedToolInfos))
+	require.Len(t, receivedToolInfos, 1)
 	assert.Equal(t, "dummy_tool", receivedToolInfos[0].Name)
 }
 
@@ -242,47 +241,6 @@ func TestDefaultAgenticGenModelInput(t *testing.T) {
 		assert.Len(t, msgs, 1)
 		assert.Equal(t, schema.AgenticRoleTypeUser, msgs[0].Role)
 	})
-}
-
-func TestAgenticRunner(t *testing.T) {
-	ctx := context.Background()
-
-	agenticResponse := &schema.AgenticMessage{
-		Role: schema.AgenticRoleTypeAssistant,
-		ContentBlocks: []*schema.ContentBlock{
-			schema.NewContentBlock(&schema.AssistantGenText{Text: "runner response"}),
-		},
-	}
-
-	m := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return agenticResponse, nil
-		},
-	}
-
-	agent, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        "RunnerAgent",
-		Description: "Runner test agent",
-		Instruction: "Be helpful.",
-		Model:       m,
-	})
-	assert.NoError(t, err)
-
-	runner := NewTypedRunner[*schema.AgenticMessage](TypedRunnerConfig[*schema.AgenticMessage]{
-		Agent: agent,
-	})
-
-	iter := runner.Run(ctx, []*schema.AgenticMessage{
-		schema.UserAgenticMessage("Hello"),
-	})
-
-	event, ok := iter.Next()
-	assert.True(t, ok)
-	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output)
-
-	_, ok = iter.Next()
-	assert.False(t, ok)
 }
 
 func TestAgenticRunnerQuery(t *testing.T) {
@@ -795,7 +753,7 @@ func TestAgenticRunner_Query_WithStreaming(t *testing.T) {
 	iterator := runner.Query(ctx, "Test query")
 
 	assert.Equal(t, 1, mockAgent_.callCount)
-	assert.Equal(t, 1, len(mockAgent_.lastInput.Messages))
+	assert.Len(t, mockAgent_.lastInput.Messages, 1)
 	assert.True(t, mockAgent_.enableStreaming)
 
 	event, ok := iterator.Next()
@@ -956,7 +914,7 @@ func TestAgenticTransferToAgentWithDesignatedCallback(t *testing.T) {
 		events = append(events, event)
 	}
 
-	assert.GreaterOrEqual(t, len(events), 2)
+	assert.Equal(t, 3, len(events))
 
 	var foundTransfer bool
 	var foundChildOutput bool
@@ -1170,7 +1128,7 @@ func TestAgenticParallelAgent(t *testing.T) {
 		events = append(events, event)
 	}
 
-	assert.Equal(t, 2, len(events))
+	assert.Len(t, events, 2)
 
 	for _, event := range events {
 		assert.Nil(t, event.Err)
@@ -1236,7 +1194,7 @@ func TestAgenticLoopAgent(t *testing.T) {
 		events = append(events, event)
 	}
 
-	assert.Equal(t, 3, len(events))
+	assert.Len(t, events, 3)
 
 	for _, event := range events {
 		assert.Nil(t, event.Err)
@@ -1295,7 +1253,7 @@ func TestAgenticLoopAgentWithBreakLoop(t *testing.T) {
 		events = append(events, event)
 	}
 
-	assert.Equal(t, 1, len(events))
+	assert.Len(t, events, 1)
 
 	event := events[0]
 	assert.Nil(t, event.Err)
@@ -1455,7 +1413,7 @@ func TestAgenticMultiAgentInterrupt(t *testing.T) {
 
 	assert.NotNil(t, interruptEvent)
 	assert.NotNil(t, interruptEvent.Action.Interrupted)
-	assert.Equal(t, 1, len(interruptEvent.Action.Interrupted.InterruptContexts))
+	assert.Len(t, interruptEvent.Action.Interrupted.InterruptContexts, 1)
 	assert.Equal(t, "hello world", interruptEvent.Action.Interrupted.InterruptContexts[0].Info)
 	assert.True(t, interruptEvent.Action.Interrupted.InterruptContexts[0].IsRootCause)
 	assert.Equal(t, Address{
@@ -1600,45 +1558,6 @@ func TestCascadingFrom_WorkflowAgents(t *testing.T) {
 	})
 }
 
-func TestCascadingTyped_NewTypedAgentTool(t *testing.T) {
-	ctx := context.Background()
-
-	m := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return &schema.AgenticMessage{
-				Role: schema.AgenticRoleTypeAssistant,
-				ContentBlocks: []*schema.ContentBlock{
-					schema.NewContentBlock(&schema.AssistantGenText{Text: "tool response"}),
-				},
-			}, nil
-		},
-	}
-
-	agent, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        "ToolAgent",
-		Description: "Agent wrapped as tool",
-		Model:       m,
-	})
-	assert.NoError(t, err)
-
-	agentTool := NewTypedAgentTool(ctx, TypedAgent[*schema.AgenticMessage](agent))
-	assert.NotNil(t, agentTool)
-
-	info, err := agentTool.Info(ctx)
-	assert.NoError(t, err)
-	assert.Equal(t, "ToolAgent", info.Name)
-}
-
-func TestCascadingTyped_TypedInterrupt(t *testing.T) {
-	ctx := context.Background()
-	ctx = AppendAddressSegment(ctx, AddressSegmentAgent, "test-agent")
-
-	event := TypedInterrupt[*schema.AgenticMessage](ctx, "please confirm")
-	assert.NotNil(t, event)
-	assert.NotNil(t, event.Action)
-	assert.NotNil(t, event.Action.Interrupted)
-}
-
 func TestCascadingTyped_TypedStatefulInterrupt(t *testing.T) {
 	ctx := context.Background()
 	ctx = AppendAddressSegment(ctx, AddressSegmentAgent, "test-agent")
@@ -1689,17 +1608,17 @@ func TestCoverage_FlowAgent_ResumeNotResumable(t *testing.T) {
 	info := &ResumeInfo{WasInterrupted: true}
 	iter := fa.Resume(ctx, info)
 
-	var foundErr bool
+	var capturedErr error
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
-			foundErr = true
+			capturedErr = event.Err
 		}
 	}
-	assert.True(t, foundErr, "should get error for non-resumable agent")
+	require.Error(t, capturedErr, "should get error for non-resumable agent")
 }
 
 func TestCoverage_GenAgenticErrorIter(t *testing.T) {
@@ -2036,7 +1955,7 @@ func TestCoverage_RewriteAgenticMessage(t *testing.T) {
 			},
 		}
 		rewritten := rewriteAgenticMessage(msg, "AgentC")
-		assert.True(t, len(rewritten.ContentBlocks) >= 3)
+		assert.GreaterOrEqual(t, len(rewritten.ContentBlocks), 3)
 	})
 }
 
@@ -2096,7 +2015,7 @@ func TestCoverage_FlowAgent_WorkflowSubAgent(t *testing.T) {
 		events = append(events, event)
 	}
 
-	require.NotEmpty(t, events)
+	require.Len(t, events, 2)
 }
 
 func TestCoverage_CopyAgenticEvent(t *testing.T) {
@@ -2225,17 +2144,17 @@ func TestCoverage_ChatModelAgent_ModelGenerateError(t *testing.T) {
 
 	iter := runner.Query(ctx, "trigger error")
 
-	var foundErr bool
+	var capturedErr error
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
-			foundErr = true
+			capturedErr = event.Err
 		}
 	}
-	assert.True(t, foundErr, "should propagate model error")
+	require.Error(t, capturedErr, "should propagate model error")
 }
 
 func TestCoverage_NewTypedUserMessages(t *testing.T) {
