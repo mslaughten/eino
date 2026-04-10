@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/schema"
@@ -127,7 +128,7 @@ func TestCopyAgentCallbackOutput(t *testing.T) {
 		assert.Len(t, result, 2)
 
 		for i, r := range result {
-			assert.NotNil(t, r, "result[%d] should not be nil", i)
+			require.NotNil(t, r, "result[%d] should not be nil", i)
 			assert.NotNil(t, r.Events, "result[%d].Events should not be nil", i)
 		}
 	})
@@ -339,7 +340,7 @@ func TestCopyAgenticCallbackOutput(t *testing.T) {
 		assert.Len(t, result, 2)
 
 		for i, r := range result {
-			assert.NotNil(t, r, "result[%d] should not be nil", i)
+			require.NotNil(t, r, "result[%d] should not be nil", i)
 			assert.NotNil(t, r.Events, "result[%d].Events should not be nil", i)
 		}
 	})

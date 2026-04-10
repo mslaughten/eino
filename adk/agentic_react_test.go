@@ -411,7 +411,7 @@ func TestAgenticReact_CancelAfterChatModel(t *testing.T) {
 	}
 	require.Error(t, capturedErr, "expected CancelError event")
 	var cancelErr *CancelError
-	assert.True(t, errors.As(capturedErr, &cancelErr))
+	require.ErrorAs(t, capturedErr, &cancelErr)
 }
 
 func TestAgenticReact_CancelAfterToolCalls(t *testing.T) {
@@ -464,7 +464,7 @@ func TestAgenticReact_CancelAfterToolCalls(t *testing.T) {
 	}
 	require.Error(t, capturedErr, "expected CancelError event")
 	var cancelErr *CancelError
-	assert.True(t, errors.As(capturedErr, &cancelErr))
+	require.ErrorAs(t, capturedErr, &cancelErr)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&modelCallCount))
 }
 
@@ -1131,7 +1131,7 @@ func TestCoverage_ConsumeStream_EmptyStream(t *testing.T) {
 
 	wrapper.consumeStream()
 
-	assert.NotNil(t, wrapper.StreamErr)
+	require.NotNil(t, wrapper.StreamErr)
 	assert.Contains(t, wrapper.StreamErr.Error(), "no messages")
 }
 
@@ -1182,7 +1182,7 @@ func TestCoverage_ConsumeStream_SingleMessage(t *testing.T) {
 	wrapper.consumeStream()
 
 	assert.Nil(t, wrapper.StreamErr)
-	assert.NotNil(t, wrapper.concatenatedMessage)
+	require.NotNil(t, wrapper.concatenatedMessage)
 	assert.Equal(t, "single", wrapper.concatenatedMessage.Content)
 }
 

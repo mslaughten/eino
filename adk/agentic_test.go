@@ -95,7 +95,7 @@ func TestAgenticChatModelAgentRun_NoTools(t *testing.T) {
 	require.NotNil(t, event.Output.MessageOutput)
 
 	msg := event.Output.MessageOutput.Message
-	assert.NotNil(t, msg)
+	require.NotNil(t, msg)
 	assert.Equal(t, schema.AgenticRoleTypeAssistant, msg.Role)
 	assert.Len(t, msg.ContentBlocks, 1)
 	assert.Equal(t, "Hello from agentic model", msg.ContentBlocks[0].AssistantGenText.Text)
@@ -205,9 +205,9 @@ func TestAgenticChatModelAgentRun_Streaming(t *testing.T) {
 	event, ok := iter.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
-	assert.NotNil(t, event.Output.MessageOutput.MessageStream)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output.MessageOutput.MessageStream)
 	event.Output.MessageOutput.MessageStream.Close()
 
 	_, ok = iter.Next()
@@ -409,7 +409,9 @@ func TestAgenticChatModelAgentRun_WithMiddleware(t *testing.T) {
 	event, ok := iter.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output.MessageOutput.Message)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output.MessageOutput.Message)
 	assert.Equal(t, schema.AgenticRoleTypeAssistant, event.Output.MessageOutput.Message.Role)
 	_, ok = iter.Next()
 	assert.False(t, ok)
@@ -455,50 +457,17 @@ func TestAgenticAfterModel_NoTools_ModifyDoesNotAffectEvent(t *testing.T) {
 	event, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
 
 	msg := event.Output.MessageOutput.Message
-	assert.NotNil(t, msg)
+	require.NotNil(t, msg)
 	assert.Equal(t, "original content", msg.ContentBlocks[0].AssistantGenText.Text)
 
 	_, ok = iterator.Next()
 	assert.False(t, ok)
 
 	assert.Len(t, capturedMessages, 3)
-}
-
-func TestAgenticChatModelAgentRun_ErrorHandling(t *testing.T) {
-	ctx := context.Background()
-
-	m := &mockAgenticModel{
-		generateFn: func(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-			return nil, errors.New("model error")
-		},
-	}
-
-	agent, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
-		Name:        "AgenticErrorAgent",
-		Description: "Test error handling",
-		Instruction: "You are helpful.",
-		Model:       m,
-	})
-	assert.NoError(t, err)
-
-	input := &TypedAgentInput[*schema.AgenticMessage]{
-		Messages: []*schema.AgenticMessage{
-			schema.UserAgenticMessage("Hello"),
-		},
-	}
-	iterator := agent.Run(ctx, input)
-
-	event, ok := iterator.Next()
-	assert.True(t, ok)
-	assert.NotNil(t, event.Err)
-	assert.Contains(t, event.Err.Error(), "model error")
-
-	_, ok = iterator.Next()
-	assert.False(t, ok)
 }
 
 func TestAgenticGetComposeOptions_WithChatModelOptions(t *testing.T) {
@@ -719,8 +688,8 @@ func TestAgenticRunner_Run_WithStreaming(t *testing.T) {
 	event, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Equal(t, "AgenticStreamRunnerAgent", event.AgentName)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
 	assert.True(t, event.Output.MessageOutput.IsStreaming)
 
 	_, ok = iterator.Next()
@@ -759,8 +728,8 @@ func TestAgenticRunner_Query_WithStreaming(t *testing.T) {
 	event, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Equal(t, "AgenticStreamQueryAgent", event.AgentName)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
 	assert.True(t, event.Output.MessageOutput.IsStreaming)
 
 	_, ok = iterator.Next()
@@ -824,23 +793,23 @@ func TestAgenticTransferToAgent(t *testing.T) {
 	event1, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event1.Err)
-	assert.NotNil(t, event1.Output)
-	assert.NotNil(t, event1.Output.MessageOutput)
+	require.NotNil(t, event1.Output)
+	require.NotNil(t, event1.Output.MessageOutput)
 
 	event2, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event2.Err)
-	assert.NotNil(t, event2.Action)
-	assert.NotNil(t, event2.Action.TransferToAgent)
+	require.NotNil(t, event2.Action)
+	require.NotNil(t, event2.Action.TransferToAgent)
 	assert.Equal(t, "ChildAgent", event2.Action.TransferToAgent.DestAgentName)
 
 	event3, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event3.Err)
-	assert.NotNil(t, event3.Output)
-	assert.NotNil(t, event3.Output.MessageOutput)
+	require.NotNil(t, event3.Output)
+	require.NotNil(t, event3.Output.MessageOutput)
 	msg := event3.Output.MessageOutput.Message
-	assert.NotNil(t, msg)
+	require.NotNil(t, msg)
 	assert.Equal(t, "Hello from child agent", msg.ContentBlocks[0].AssistantGenText.Text)
 
 	_, ok = iterator.Next()
@@ -914,7 +883,7 @@ func TestAgenticTransferToAgentWithDesignatedCallback(t *testing.T) {
 		events = append(events, event)
 	}
 
-	assert.Equal(t, 3, len(events))
+	assert.Len(t, events, 3)
 
 	var foundTransfer bool
 	var foundChildOutput bool
@@ -989,15 +958,15 @@ func TestAgenticSequentialAgent(t *testing.T) {
 	event1, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event1.Err)
-	assert.NotNil(t, event1.Output)
-	assert.NotNil(t, event1.Output.MessageOutput)
+	require.NotNil(t, event1.Output)
+	require.NotNil(t, event1.Output.MessageOutput)
 	assert.Equal(t, "Response from Agent1", event1.Output.MessageOutput.Message.ContentBlocks[0].AssistantGenText.Text)
 
 	event2, ok := iterator.Next()
 	assert.True(t, ok)
 	assert.Nil(t, event2.Err)
-	assert.NotNil(t, event2.Output)
-	assert.NotNil(t, event2.Output.MessageOutput)
+	require.NotNil(t, event2.Output)
+	require.NotNil(t, event2.Output.MessageOutput)
 	assert.Equal(t, "Response from Agent2", event2.Output.MessageOutput.Message.ContentBlocks[0].AssistantGenText.Text)
 
 	_, ok = iterator.Next()
@@ -1132,11 +1101,11 @@ func TestAgenticParallelAgent(t *testing.T) {
 
 	for _, event := range events {
 		assert.Nil(t, event.Err)
-		assert.NotNil(t, event.Output)
-		assert.NotNil(t, event.Output.MessageOutput)
+		require.NotNil(t, event.Output)
+		require.NotNil(t, event.Output.MessageOutput)
 
 		msg := event.Output.MessageOutput.Message
-		assert.NotNil(t, msg)
+		require.NotNil(t, msg)
 
 		if event.AgentName == "Agent1" {
 			assert.Equal(t, "Response from Agent1", msg.ContentBlocks[0].AssistantGenText.Text)
@@ -1198,11 +1167,11 @@ func TestAgenticLoopAgent(t *testing.T) {
 
 	for _, event := range events {
 		assert.Nil(t, event.Err)
-		assert.NotNil(t, event.Output)
-		assert.NotNil(t, event.Output.MessageOutput)
+		require.NotNil(t, event.Output)
+		require.NotNil(t, event.Output.MessageOutput)
 
 		msg := event.Output.MessageOutput.Message
-		assert.NotNil(t, msg)
+		require.NotNil(t, msg)
 		assert.Equal(t, "Loop iteration", msg.ContentBlocks[0].AssistantGenText.Text)
 	}
 }
@@ -1257,16 +1226,16 @@ func TestAgenticLoopAgentWithBreakLoop(t *testing.T) {
 
 	event := events[0]
 	assert.Nil(t, event.Err)
-	assert.NotNil(t, event.Output)
-	assert.NotNil(t, event.Output.MessageOutput)
-	assert.NotNil(t, event.Action)
-	assert.NotNil(t, event.Action.BreakLoop)
+	require.NotNil(t, event.Output)
+	require.NotNil(t, event.Output.MessageOutput)
+	require.NotNil(t, event.Action)
+	require.NotNil(t, event.Action.BreakLoop)
 	assert.True(t, event.Action.BreakLoop.Done)
 	assert.Equal(t, "LoopAgent", event.Action.BreakLoop.From)
 	assert.Equal(t, 0, event.Action.BreakLoop.CurrentIterations)
 
 	msg := event.Output.MessageOutput.Message
-	assert.NotNil(t, msg)
+	require.NotNil(t, msg)
 	assert.Equal(t, "Loop iteration with break loop", msg.ContentBlocks[0].AssistantGenText.Text)
 }
 

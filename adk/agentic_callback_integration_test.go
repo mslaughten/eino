@@ -194,7 +194,7 @@ func TestAgenticCallbackMultipleHandlers(t *testing.T) {
 		Instruction: "You are a test agent",
 		Model:       m,
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	recorder1 := &agenticCallbackRecorder{}
 	recorder2 := &agenticCallbackRecorder{}
@@ -213,13 +213,13 @@ func TestAgenticCallbackMultipleHandlers(t *testing.T) {
 	<-recorder1.eventsDone
 	<-recorder2.eventsDone
 
-	assert.True(t, recorder1.onStartCalled, "Handler1 OnStart should be called")
-	assert.True(t, recorder2.onStartCalled, "Handler2 OnStart should be called")
-	assert.True(t, recorder1.onEndCalled, "Handler1 OnEnd should be called")
-	assert.True(t, recorder2.onEndCalled, "Handler2 OnEnd should be called")
+	assert.True(t, recorder1.getOnStartCalled(), "Handler1 OnStart should be called")
+	assert.True(t, recorder2.getOnStartCalled(), "Handler2 OnStart should be called")
+	assert.True(t, recorder1.getOnEndCalled(), "Handler1 OnEnd should be called")
+	assert.True(t, recorder2.getOnEndCalled(), "Handler2 OnEnd should be called")
 
-	assert.NotEmpty(t, recorder1.eventsReceived, "Handler1 should receive events")
-	assert.NotEmpty(t, recorder2.eventsReceived, "Handler2 should receive events")
+	assert.NotEmpty(t, recorder1.getEventsReceived(), "Handler1 should receive events")
+	assert.NotEmpty(t, recorder2.getEventsReceived(), "Handler2 should receive events")
 }
 
 func TestAgenticCallbackWithSequentialWorkflow(t *testing.T) {
@@ -243,7 +243,7 @@ func TestAgenticCallbackWithSequentialWorkflow(t *testing.T) {
 		Instruction: "You are agent 1",
 		Model:       m1,
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	agent2, err := NewTypedChatModelAgent[*schema.AgenticMessage](ctx, &TypedChatModelAgentConfig[*schema.AgenticMessage]{
 		Name:        "Agent2",
@@ -251,14 +251,14 @@ func TestAgenticCallbackWithSequentialWorkflow(t *testing.T) {
 		Instruction: "You are agent 2",
 		Model:       m2,
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	seqAgent, err := newTypedSequentialAgent[*schema.AgenticMessage](ctx, &typedSequentialAgentConfig[*schema.AgenticMessage]{
 		Name:        "SequentialAgent",
 		Description: "Sequential workflow",
 		SubAgents:   []TypedAgent[*schema.AgenticMessage]{agent1, agent2},
 	})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	var callbackInfos []*callbacks.RunInfo
 	handler := callbacks.NewHandlerBuilder().

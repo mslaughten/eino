@@ -138,7 +138,7 @@ func TestAgenticIntegration_ChatModelToolsPassedViaOptions(t *testing.T) {
 	}
 
 	require.NotNil(t, receivedTools, "tools should be passed via model.Options")
-	assert.Equal(t, 1, len(receivedTools))
+	require.Len(t, receivedTools, 1)
 	assert.Equal(t, "my_tool", receivedTools[0].Name)
 }
 
@@ -375,7 +375,7 @@ func TestAgenticIntegration_NestedParallelWorkflow(t *testing.T) {
 	assert.Contains(t, outputs, "inner1 out")
 	assert.Contains(t, outputs, "inner2 out")
 	assert.Contains(t, outputs, "successor out")
-	assert.Equal(t, 4, len(outputs))
+	assert.Len(t, outputs, 4)
 }
 
 func TestAgenticIntegration_AgentTool(t *testing.T) {
@@ -959,7 +959,7 @@ func TestAgenticIntegration_WorkflowWithoutInterrupt(t *testing.T) {
 			}
 		}
 
-		assert.Equal(t, 1, len(outputs))
+		assert.Len(t, outputs, 1)
 		assert.Contains(t, outputs, "break output")
 	})
 }
