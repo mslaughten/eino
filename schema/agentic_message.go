@@ -1378,7 +1378,6 @@ func concatAssistantGenTexts(texts []*AssistantGenText) (ret *AssistantGenText, 
 		if err != nil {
 			return nil, err
 		}
-		ret.Extension = extensions.Interface()
 	}
 
 	if len(openaiExtensions) > 0 {
@@ -2072,7 +2071,11 @@ func (m *MCPToolResult) String() string {
 	sb.WriteString(fmt.Sprintf("      name: %s\n", m.Name))
 	sb.WriteString(fmt.Sprintf("      result: %s\n", m.Result))
 	if m.Error != nil {
-		sb.WriteString(fmt.Sprintf("      error: [%d] %s\n", *m.Error.Code, m.Error.Message))
+		if m.Error.Code != nil {
+			sb.WriteString(fmt.Sprintf("      error: [%d] %s\n", *m.Error.Code, m.Error.Message))
+		} else {
+			sb.WriteString(fmt.Sprintf("      error: %s\n", m.Error.Message))
+		}
 	}
 	return sb.String()
 }

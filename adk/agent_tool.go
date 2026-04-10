@@ -339,8 +339,11 @@ func getEmitGeneratorAndEnableStreaming(opts []tool.Option) (*AsyncGenerator[*Ag
 func getReactChatHistory(ctx context.Context, destAgentName string) ([]Message, error) {
 	var messages []Message
 	err := compose.ProcessState(ctx, func(ctx context.Context, st *State) error {
+		if len(st.Messages) == 0 {
+			return nil
+		}
 		messages = make([]Message, len(st.Messages)-1)
-		copy(messages, st.Messages[:len(st.Messages)-1]) // remove the last assistant message, which is the tool call message
+		copy(messages, st.Messages[:len(st.Messages)-1])
 		return nil
 	})
 	if err != nil {
@@ -373,6 +376,9 @@ func getReactChatHistory(ctx context.Context, destAgentName string) ([]Message, 
 func getAgenticReactChatHistory(ctx context.Context, destAgentName string) ([]*schema.AgenticMessage, error) {
 	var messages []*schema.AgenticMessage
 	err := compose.ProcessState(ctx, func(ctx context.Context, st *typedState[*schema.AgenticMessage]) error {
+		if len(st.Messages) == 0 {
+			return nil
+		}
 		messages = make([]*schema.AgenticMessage, len(st.Messages)-1)
 		copy(messages, st.Messages[:len(st.Messages)-1])
 		return nil

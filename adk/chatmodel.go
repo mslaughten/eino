@@ -144,6 +144,10 @@ type ToolsConfig struct {
 	EmitInternalEvents bool
 }
 
+// TypedGenModelInput transforms the agent's system instruction and user input into model input
+// messages ([]M). This is the primary customization point for controlling what the model sees.
+// The default implementation prepends a system message (if instruction is non-empty),
+// followed by the user's input messages.
 type TypedGenModelInput[M MessageType] func(ctx context.Context, instruction string, input *TypedAgentInput[M]) ([]M, error)
 
 // GenModelInput transforms agent instructions and input into a format suitable for the model.
@@ -461,11 +465,15 @@ func NewChatModelAgent(ctx context.Context, config *ChatModelAgentConfig) (*Chat
 // NewTypedChatModelAgent creates a new TypedChatModelAgent with the given config.
 func NewTypedChatModelAgent[M MessageType](ctx context.Context, config *TypedChatModelAgentConfig[M]) (*TypedChatModelAgent[M], error) {
 	if config.ModelFailoverConfig != nil {
+		var zero M
+		if _, ok := any(zero).(*schema.Message); !ok {
+			return nil, errors.New("ModelFailoverConfig is only supported for *schema.Message agents; AgenticMessage agents cannot use failover")
+		}
+
 		if config.ModelFailoverConfig.GetFailoverModel == nil {
 			return nil, errors.New("ModelFailoverConfig.GetFailoverModel is required when ModelFailoverConfig is set")
 		}
 
-		// ShouldFailover is required when ModelFailoverConfig is set
 		if config.ModelFailoverConfig.ShouldFailover == nil {
 			return nil, errors.New("ModelFailoverConfig.ShouldFailover is required when ModelFailoverConfig is set")
 		}
@@ -706,8 +714,7 @@ func extractTextContent[M MessageType](msg M) string {
 }
 
 func setOutputToSession[M MessageType](ctx context.Context, msg M, msgStream *schema.StreamReader[M], outputKey string) error {
-	var zero M
-	if any(msg) != any(zero) {
+	if !isNilMessage(msg) {
 		AddSessionValue(ctx, outputKey, extractTextContent(msg))
 		return nil
 	}
