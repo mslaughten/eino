@@ -99,10 +99,14 @@ go test ./...
 golangci-lint run
 ```
 
+## Personal Notes
+
+> **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
+
 ## License
 
 This project is licensed under the Apache 2.0 License — see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgements
 
-This project is a fork of [cloudwego/eino](https://github.com/cloudwego/eino), originally developed by the CloudWeGo team at ByteDance.
+This project is a fork of [cloudwego/eino](https://github.com/cloudwego/eino), originally developed by the CloudWeGo team.
