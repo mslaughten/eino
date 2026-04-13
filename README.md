@@ -103,4 +103,4 @@ golangci-lint run
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
 >
-> **TODO:** Explore adding a hybrid retriever that combines BM25 sparse search with dense vector retrieval — upstream only covers the dense path so far.
+> **TODO:** Explore using the `flow` package for a multi-stage document ingestion pipeline (load → chunk → embed → index). Upstream issue [#42](https://github.com/cloudwego/eino/issues/42) may be relevant once resolved.
