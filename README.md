@@ -103,4 +103,8 @@ golangci-lint run
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
 >
-> **TODO:** Explore using the `flow` package for a multi-stage document ingestion pipeline (load → chunk → embed → index). Upstream issue [#42](https://github.com/cloudwego/eino/issues/42) may be relevant once resolved.
+> **Active experiments:**
+> - `examples/rag_pipeline/` — a multi-stage RAG graph with a custom reranker node
+> - `examples/streaming_chat/` — exploring streaming responses with context cancellation handling
+>
+> Syncing with upstream periodically; check `git log --oneline upstream/main` for divergence.
