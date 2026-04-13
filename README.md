@@ -102,10 +102,5 @@ golangci-lint run
 ## Personal Notes
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
-
-### My Experiments
-
-- `examples/rag/` — basic RAG pipeline wiring a retriever into a chat graph
-- `examples/custom_retriever/` — experimenting with a BM25-based retriever implementation
-
-> **Tip (personal):** When testing retriever recall locally, set `EINO_LOG_LEVEL=debug` to see node-level graph execution traces — much easier than adding fmt.Println everywhere.
+>
+> **TODO:** Explore adding a hybrid retriever that combines BM25 sparse search with dense vector retrieval — upstream only has the dense retriever interface so far.
