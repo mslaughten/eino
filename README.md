@@ -103,6 +103,4 @@ golangci-lint run
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
 >
-> **Branches of interest:**
-> - `custom-retriever` — experimenting with a hybrid BM25 + vector retriever
-> - `rag-graph` — multi-step RAG pipeline using the graph composition API
+> **TODO:** Explore adding a hybrid retriever that combines BM25 sparse search with dense vector retrieval — could be useful for domain-specific corpora where keyword matching still matters.
