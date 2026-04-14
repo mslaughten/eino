@@ -103,8 +103,6 @@ golangci-lint run
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
 >
-> **Active experiments:**
-> - `examples/rag_pipeline/` — a multi-stage RAG graph with a custom reranker node
-> - `examples/streaming_chat/` — exploring streaming responses with context cancellation handling
->
-> Syncing with upstream periodically; check `git log --oneline upstream/main` for divergence.
+> **Branches of interest:**
+> - `custom-retriever` — experimenting with a hybrid BM25 + vector retriever
+> - `rag-graph` — multi-step RAG pipeline using the graph composition API
