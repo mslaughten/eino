@@ -103,4 +103,8 @@ golangci-lint run
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
 >
-> **TODO:** Explore adding a hybrid retriever that combines BM25 sparse search with dense vector retrieval — upstream only supports dense retrieval out of the box.
+> **Active experiments:**
+> - `examples/rag/` — custom retriever backed by a local Qdrant instance
+> - `examples/graph/` — multi-step graph pipeline for document Q&A
+>
+> Syncing with upstream periodically; see `upstream` remote for tracking branch.
