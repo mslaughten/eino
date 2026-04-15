@@ -23,3 +23,7 @@ require (
 
 // Personal fork of cloudwego/eino for learning and experimentation.
 // Upstream: https://github.com/cloudwego/eino
+//
+// Notes:
+//   - Pinned golang.org/x/net to v0.22.0 (addresses CVE-2023-44487 / rapid reset)
+//   - golang.org/x/sys v0.18.0 matches the net version constraint above
