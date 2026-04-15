@@ -27,3 +27,5 @@ require (
 // Notes:
 //   - Pinned golang.org/x/net to v0.22.0 (addresses CVE-2023-44487 / rapid reset)
 //   - golang.org/x/sys v0.18.0 matches the net version constraint above
+//   - TODO: explore replacing bytedance/sonic with stdlib encoding/json for
+//     portability on non-amd64 architectures (sonic has limited arch support)
