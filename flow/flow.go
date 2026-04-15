@@ -62,6 +62,10 @@ func (f *Flow) AddNode(n *Node) error {
 	if n.ID == "" {
 		return fmt.Errorf("flow: node ID must not be empty")
 	}
+	// NOTE: also require a handler to be set, otherwise Run will panic later
+	if n.Handler == nil {
+		return fmt.Errorf("flow: node %q must have a non-nil Handler", n.ID)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, exists := f.nodes[n.ID]; exists {
@@ -105,29 +109,4 @@ func (f *Flow) Run(ctx context.Context, startID string, initialInput any) (any, 
 	}
 
 	current := startID
-	for {
-		next := f.nextNode(current)
-		if next == "" {
-			break
-		}
-		n := f.nodes[next]
-		output, err = n.Handler(ctx, output)
-		if err != nil {
-			return nil, fmt.Errorf("flow: node %q failed: %w", next, err)
-		}
-		current = next
-	}
-
-	return output, nil
-}
-
-// nextNode returns the ID of the first node connected from fromID,
-// or an empty string if no outgoing edge exists.
-func (f *Flow) nextNode(fromID string) string {
-	for _, e := range f.edges {
-		if e.From == fromID {
-			return e.To
-		}
-	}
-	return ""
-}
+	
