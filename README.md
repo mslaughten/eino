@@ -102,9 +102,5 @@ golangci-lint run
 ## Personal Notes
 
 > **Note (personal fork):** I'm using this fork primarily to experiment with custom retriever implementations and graph-based RAG pipelines. The `examples/` directory contains my own usage examples not present in the upstream repo.
-
-### My Experiments
-
-- `examples/rag/` — basic RAG pipeline wiring a retriever into a chat graph
-- `examples/custom_retriever/` — custom retriever backed by a local SQLite FTS index (quick & dirty, no external vector DB needed)
-- TODO: try out the `flow` package patterns for multi-agent setups
+>
+> **TODO:** Explore adding a hybrid retriever that combines BM25 sparse search with dense vector retrieval — upstream only supports dense retrieval out of the box.
