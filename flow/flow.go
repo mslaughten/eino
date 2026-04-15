@@ -87,6 +87,7 @@ func (f *Flow) AddEdge(fromID, toID string) error {
 	if _, ok := f.nodes[toID]; !ok {
 		return fmt.Errorf("flow: destination node %q not found", toID)
 	}
+	// TODO: consider adding cycle detection here to catch DAG violations early
 	f.edges = append(f.edges, Edge{From: fromID, To: toID})
 	return nil
 }
@@ -103,10 +104,32 @@ func (f *Flow) Run(ctx context.Context, startID string, initialInput any) (any, 
 		return nil, fmt.Errorf("flow: start node %q not found", startID)
 	}
 
+	// Execute the start node with the initial input.
 	output, err := startNode.Handler(ctx, initialInput)
 	if err != nil {
 		return nil, fmt.Errorf("flow: node %q failed: %w", startID, err)
 	}
 
-	current := startID
-	
+	// Follow edges from startID in order, passing output along the chain.
+	currentID := startID
+	for {
+		nextID := ""
+		for _, e := range f.edges {
+			if e.From == currentID {
+				nextID = e.To
+				break
+			}
+		}
+		if nextID == "" {
+			break
+		}
+		nextNode := f.nodes[nextID]
+		output, err = nextNode.Handler(ctx, output)
+		if err != nil {
+			return nil, fmt.Errorf("flow: node %q failed: %w", nextID, err)
+		}
+		currentID = nextID
+	}
+
+	return output, nil
+}
